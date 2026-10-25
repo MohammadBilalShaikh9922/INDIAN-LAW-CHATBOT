@@ -1,4 +1,4 @@
-AI Powered Indian Law Chatbot
+# AI Powered Indian Law Chatbot
 A deployable starter web application inspired by the seminar report “AI Powered Indian Law Chat Bot”. It provides a responsive chat UI and a FastAPI backend that searches a small, curated starter knowledge base and returns plain-language summaries with source links.
 
 Important: This is an educational legal-information prototype, not a lawyer or legal-advice service. The included knowledge base is intentionally small and is not a complete or authoritative database of Indian law. Verify current law using official sources and consult a qualified advocate for case-specific advice.
