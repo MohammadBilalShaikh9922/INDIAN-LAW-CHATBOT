@@ -1,0 +1,130 @@
+[
+  {
+    "id": "constitution-article-21",
+    "title": "Article 21 — Protection of life and personal liberty",
+    "act": "Constitution of India",
+    "provision": "Article 21",
+    "summary": "Article 21 states that no person shall be deprived of life or personal liberty except according to procedure established by law. Its interpretation has developed through constitutional case law. The precise application depends on the facts and relevant judgments.",
+    "keywords": [
+      "article 21",
+      "life",
+      "personal liberty",
+      "fundamental rights",
+      "constitution",
+      "liberty",
+      "right to life"
+    ],
+    "source_title": "Legislative Department — Constitution of India",
+    "source_url": "https://legislative.gov.in/constitution-of-india/"
+  },
+  {
+    "id": "constitution-article-14",
+    "title": "Article 14 — Equality before law",
+    "act": "Constitution of India",
+    "provision": "Article 14",
+    "summary": "Article 14 provides equality before the law and equal protection of the laws within the territory of India. How it applies in a specific dispute depends on the facts and applicable constitutional interpretation.",
+    "keywords": [
+      "article 14",
+      "equality",
+      "equal protection",
+      "fundamental rights",
+      "constitution",
+      "discrimination"
+    ],
+    "source_title": "Legislative Department — Constitution of India",
+    "source_url": "https://legislative.gov.in/constitution-of-india/"
+  },
+  {
+    "id": "consumer-protection",
+    "title": "Consumer protection — general starting point",
+    "act": "Consumer Protection Act, 2019",
+    "provision": "Consumer rights and remedies",
+    "summary": "The Consumer Protection Act, 2019 provides a statutory framework for consumer rights and mechanisms for addressing qualifying consumer disputes. The appropriate forum, limitation period, evidence, and remedy depend on the transaction and facts. Check the Act and official consumer resources before acting.",
+    "keywords": [
+      "consumer",
+      "consumer rights",
+      "refund",
+      "defective product",
+      "complaint",
+      "consumer protection act",
+      "e commerce"
+    ],
+    "source_title": "India Code — Government of India",
+    "source_url": "https://www.indiacode.nic.in/"
+  },
+  {
+    "id": "tenant-rights",
+    "title": "Tenant rights — jurisdiction-specific information needed",
+    "act": "Applicable state tenancy and rent laws",
+    "provision": "Depends on state and facts",
+    "summary": "Tenant and landlord rights can depend on the state or union territory, the applicable rent-control or tenancy law, the lease, and the circumstances. Before relying on a general answer, identify the property location and check the relevant state legislation. Do not assume one rule applies throughout India.",
+    "keywords": [
+      "tenant",
+      "landlord",
+      "rent",
+      "eviction",
+      "deposit",
+      "lease",
+      "rental agreement",
+      "tenancy"
+    ],
+    "source_title": "India Code — Government of India",
+    "source_url": "https://www.indiacode.nic.in/"
+  },
+  {
+    "id": "employment-rights",
+    "title": "Employment rights — identify the applicable labour law",
+    "act": "Applicable Indian labour legislation",
+    "provision": "Depends on employment type, location, and applicable law",
+    "summary": "Employment entitlements can depend on the nature of employment, establishment, state, contract, and the law in force. For issues such as wages, termination, leave, or workplace safety, identify the relevant facts and verify the applicable central and state legislation or seek qualified advice.",
+    "keywords": [
+      "employee",
+      "employment",
+      "labour",
+      "labor",
+      "salary",
+      "wages",
+      "termination",
+      "workplace",
+      "leave",
+      "rights"
+    ],
+    "source_title": "Ministry of Labour & Employment",
+    "source_url": "https://labour.gov.in/"
+  },
+  {
+    "id": "bns-criminal-law",
+    "title": "Current criminal-law framework — Bharatiya Nyaya Sanhita, 2023",
+    "act": "Bharatiya Nyaya Sanhita, 2023",
+    "provision": "Check the applicable provision and commencement",
+    "summary": "The Bharatiya Nyaya Sanhita, 2023 is part of India's newer criminal-law framework and replaced the Indian Penal Code for matters governed by the new law from its commencement, subject to applicable transitional rules. A question phrased using an IPC section may need to be mapped carefully to the relevant law and date; do not assume section numbers are interchangeable.",
+    "keywords": [
+      "bns",
+      "bharatiya nyaya sanhita",
+      "ipc",
+      "indian penal code",
+      "criminal law",
+      "cheating",
+      "section 420"
+    ],
+    "source_title": "India Code — Government of India",
+    "source_url": "https://www.indiacode.nic.in/"
+  },
+  {
+    "id": "legal-aid",
+    "title": "Legal aid — official starting point",
+    "act": "Legal Services Authorities framework",
+    "provision": "Eligibility and procedure should be checked with the relevant authority",
+    "summary": "Free legal services may be available to eligible people through the legal services authorities system. Eligibility and the process depend on the governing rules and circumstances. Contact the relevant State Legal Services Authority or District Legal Services Authority to confirm options.",
+    "keywords": [
+      "free lawyer",
+      "legal aid",
+      "free legal assistance",
+      "legal services authority",
+      "district legal services",
+      "lawyer help"
+    ],
+    "source_title": "National Legal Services Authority",
+    "source_url": "https://nalsa.gov.in/"
+  }
+]
