@@ -16,8 +16,8 @@ from app.database import get_supabase_client
 from app.legislation_importer import (
     default_dataset_path,
     import_dataset,
+    preview_dataset,
 )
-
 
 APP_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = APP_DIR.parent
