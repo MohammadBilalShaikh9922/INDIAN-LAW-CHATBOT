@@ -48,7 +48,16 @@ export default function App() {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({
+          message,
+          history: messages
+            .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+            .slice(-10)
+            .map(msg => ({
+              role: msg.role,
+              content: msg.text
+            }))
+        })
       });
 
       if (!response.ok) {
