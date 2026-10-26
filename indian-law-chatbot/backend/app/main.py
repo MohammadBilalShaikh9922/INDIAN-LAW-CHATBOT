@@ -7,10 +7,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
+
+from app.database import get_supabase_client
+
 
 APP_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = APP_DIR.parent
@@ -22,6 +25,7 @@ PDF_SOURCE_URL = (
     "blob/main/indian-law-chatbot/backend/constitution_of_india.pdf"
 )
 
+
 def load_knowledge_base() -> list[dict[str, Any]]:
     try:
         with KB_PATH.open("r", encoding="utf-8") as file:
@@ -29,6 +33,7 @@ def load_knowledge_base() -> list[dict[str, Any]]:
         return data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+
 
 KNOWLEDGE_BASE = load_knowledge_base()
 
@@ -43,15 +48,13 @@ def extract_constitution_articles() -> list[dict[str, Any]]:
         reader = PdfReader(str(PDF_PATH))
         text = "\n".join(page.extract_text() or "" for page in reader.pages)
     except Exception as exc:
-        print(f"Could not read Constitution PDF: {exc}")
+        print(f"Could not read Constitution PDF: {type(exc).__name__}")
         return []
 
     if not text.strip():
         print("The Constitution PDF did not produce extractable text.")
         return []
 
-    # Handles common headings such as "21. Protection of life..."
-    # and "Article 21. Protection of life...".
     heading_pattern = re.compile(
         r"(?m)^[ \t]*(?:Article[ \t]+)?"
         r"(\d{1,3}[A-Z]?)\s*\.\s*"
@@ -60,37 +63,43 @@ def extract_constitution_articles() -> list[dict[str, Any]]:
     )
 
     headings = []
+
     for match in heading_pattern.finditer(text):
         number = match.group(1).upper()
         numeric_part = re.match(r"\d+", number)
+
         if not numeric_part:
             continue
 
         numeric_value = int(numeric_part.group())
+
         if not 1 <= numeric_value <= 395:
             continue
 
         title = match.group(2).strip()
         headings.append((match.start(), match.end(), number, title))
 
-    # Remove duplicate heading positions, preserving document order.
     unique_headings = []
     seen_positions = set()
+
     for heading in headings:
         if heading[0] not in seen_positions:
             unique_headings.append(heading)
             seen_positions.add(heading[0])
 
     articles = []
-    for index, (start, body_start, number, title) in enumerate(unique_headings):
+
+    for index, (start, body_start, number, title) in enumerate(
+        unique_headings
+    ):
         end = (
             unique_headings[index + 1][0]
             if index + 1 < len(unique_headings)
             else len(text)
         )
+
         body = text[body_start:end].strip()
 
-        # Avoid treating tiny numbered items as useful legal provisions.
         if len(body) < 20:
             continue
 
@@ -117,11 +126,15 @@ def extract_constitution_articles() -> list[dict[str, Any]]:
 CONSTITUTION_ENTRIES = extract_constitution_articles()
 ALL_ENTRIES = KNOWLEDGE_BASE + CONSTITUTION_ENTRIES
 
+
 app = FastAPI(
     title="AI Powered Indian Law Chatbot API",
-    description="Educational legal-information retrieval prototype. Not legal advice.",
-    version="1.1.0",
+    description=(
+        "Educational legal-information retrieval prototype. Not legal advice."
+    ),
+    version="1.2.0",
 )
+
 
 origins = [
     origin.strip()
@@ -202,26 +215,32 @@ def score_entry(query: str, entry: dict[str, Any]) -> float:
     ])
 
     tokens = set(normalize(searchable).split())
+
     if not q_tokens or not tokens:
         return 0.0
 
     overlap = len(q_tokens & tokens)
+
     title_tokens = set(normalize(
-        str(entry.get("title", "")) + " " +
-        str(entry.get("provision", ""))
+        str(entry.get("title", "")) + " "
+        + str(entry.get("provision", ""))
     ).split())
 
     title_overlap = len(q_tokens & title_tokens)
+
     return overlap / (len(q_tokens) ** 0.5) + 0.75 * title_overlap
 
 
-def retrieve(query: str, limit: int = 3) -> list[tuple[float, dict[str, Any]]]:
-    # Exact article-number matching takes priority over keyword scoring.
+def retrieve(
+    query: str,
+    limit: int = 3,
+) -> list[tuple[float, dict[str, Any]]]:
     article_number = requested_article(query)
 
     if article_number:
         exact = [
-            item for item in CONSTITUTION_ENTRIES
+            item
+            for item in CONSTITUTION_ENTRIES
             if str(item.get("provision", "")).upper()
             == f"ARTICLE {article_number}"
         ]
@@ -229,15 +248,22 @@ def retrieve(query: str, limit: int = 3) -> list[tuple[float, dict[str, Any]]]:
         if exact:
             return [(1000.0, exact[0])]
 
-        # Never return an unrelated article when an exact article was asked for.
+        # Do not substitute an unrelated article.
         return []
 
     scored = [
         (score_entry(query, item), item)
         for item in ALL_ENTRIES
     ]
-    scored = [(score, item) for score, item in scored if score > 0]
+
+    scored = [
+        (score, item)
+        for score, item in scored
+        if score > 0
+    ]
+
     scored.sort(key=lambda pair: pair[0], reverse=True)
+
     return scored[:limit]
 
 
@@ -258,6 +284,62 @@ def health() -> dict[str, str | int]:
         "knowledge_entries": len(ALL_ENTRIES),
         "constitution_articles_loaded": len(CONSTITUTION_ENTRIES),
     }
+
+
+@app.get("/api/db-health")
+def database_health() -> dict[str, Any]:
+    """Verify that Supabase credentials and both law tables are accessible."""
+    try:
+        client = get_supabase_client()
+
+        if client is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Supabase environment variables are missing.",
+            )
+
+        acts_result = (
+            client.table("law_acts")
+            .select("id")
+            .limit(1)
+            .execute()
+        )
+
+        provisions_result = (
+            client.table("law_provisions")
+            .select("id")
+            .limit(1)
+            .execute()
+        )
+
+        return {
+            "status": "ok",
+            "database": "connected",
+            "tables": {
+                "law_acts": "accessible",
+                "law_provisions": "accessible",
+            },
+            "sample_rows": {
+                "law_acts": len(acts_result.data),
+                "law_provisions": len(provisions_result.data),
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Do not return database credentials or raw error details to users.
+        print(
+            "Supabase health check failed: "
+            f"{type(exc).__name__}"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Supabase connection or table access failed. "
+                "Check the Render logs."
+            ),
+        ) from None
 
 
 @app.get("/api/laws")
@@ -312,9 +394,12 @@ def chat(request: ChatRequest) -> ChatResponse:
     top_score, top = matches[0]
 
     sources = []
+
     for _, item in matches:
         sources.append(Source(
-            title=str(item.get("source_title", item.get("title", "Legal source"))),
+            title=str(
+                item.get("source_title", item.get("title", "Legal source"))
+            ),
             url=str(item.get("source_url", PDF_SOURCE_URL)),
             act=item.get("act"),
             provision=item.get("provision"),
@@ -325,8 +410,8 @@ def chat(request: ChatRequest) -> ChatResponse:
             f"**{top['title']}**\n\n"
             f"{top['summary']}\n\n"
             "This text was extracted from the uploaded PDF and has not yet "
-            "been independently checked for extraction errors or edition currency. "
-            "Please compare it with the official published Constitution."
+            "been independently checked for extraction errors or edition "
+            "currency. Please compare it with the official published Constitution."
         )
     else:
         answer = (
