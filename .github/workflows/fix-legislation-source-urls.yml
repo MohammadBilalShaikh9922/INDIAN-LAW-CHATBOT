@@ -1,0 +1,43 @@
+
+name: Fix Legislation Source URLs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-source-urls:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Correct source URLs
+        run: |
+          python indian-law-chatbot/backend/app/fix_legislation_source_urls.py
+
+      - name: Check dataset changes
+        run: |
+          git diff --check
+          git diff -- indian-law-chatbot/backend/app/data/central_acts.json
+
+      - name: Commit corrected dataset
+        run: |
+          if git diff --quiet -- indian-law-chatbot/backend/app/data/central_acts.json; then
+            echo "No source URL changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add indian-law-chatbot/backend/app/data/central_acts.json
+          git commit -m "Correct legislation source URLs"
+          git push
