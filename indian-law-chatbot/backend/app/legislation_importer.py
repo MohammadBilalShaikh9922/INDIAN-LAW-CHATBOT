@@ -43,7 +43,6 @@ ALLOWED_JURISDICTIONS = {
 
 
 def validate_act(record: dict[str, Any]) -> list[str]:
-    """Return structural validation errors for an Act."""
     errors = []
 
     for field in REQUIRED_ACT_FIELDS:
@@ -89,7 +88,6 @@ def validate_act(record: dict[str, Any]) -> list[str]:
 
 
 def validate_provision(record: dict[str, Any]) -> list[str]:
-    """Return structural validation errors for a provision."""
     errors = []
 
     for field in REQUIRED_PROVISION_FIELDS:
@@ -100,7 +98,6 @@ def validate_provision(record: dict[str, Any]) -> list[str]:
 
 
 def load_dataset(file_path: str) -> list[dict[str, Any]]:
-    """Load a JSON array containing Act records."""
     path = Path(file_path)
 
     if not path.is_file():
@@ -118,13 +115,22 @@ def load_dataset(file_path: str) -> list[dict[str, Any]]:
     return data
 
 
-def _register_batch(client: Any, batch_id: str) -> None:
-    """Register a batch before importing any legislation records."""
+def _register_batch(
+    client: Any,
+    batch_id: str,
+    expected_acts: int,
+    expected_provisions: int,
+) -> None:
+    """Register expected counts before writing any legislation."""
     result = (
         client.table("law_import_batches")
         .insert({
             "id": batch_id,
             "status": "staged",
+            "expected_acts": expected_acts,
+            "expected_provisions": expected_provisions,
+            "imported_acts": 0,
+            "imported_provisions": 0,
         })
         .execute()
     )
@@ -137,20 +143,26 @@ def _finish_batch(
     client: Any,
     batch_id: str,
     status: str,
+    imported_acts: int,
+    imported_provisions: int,
 ) -> None:
-    """Update the batch status without publishing its records."""
+    """Save counts and completion status without publishing records."""
     if status not in {"staged", "partial"}:
         raise ValueError("Invalid import completion status.")
 
     result = (
         client.table("law_import_batches")
-        .update({"status": status})
+        .update({
+            "status": status,
+            "imported_acts": imported_acts,
+            "imported_provisions": imported_provisions,
+        })
         .eq("id", batch_id)
         .execute()
     )
 
     if not result.data:
-        raise RuntimeError("Could not update the import batch status.")
+        raise RuntimeError("Could not update the import batch.")
 
 
 def _upsert_act(
@@ -262,12 +274,7 @@ def import_dataset(
     file_path: str,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    """
-    Validate and optionally import a dataset.
-
-    Real imports are registered in law_import_batches before data writes.
-    New records remain staged. This function never publishes legislation.
-    """
+    """Validate and optionally import a dataset without publishing it."""
     records = load_dataset(file_path)
 
     report: dict[str, Any] = {
@@ -343,11 +350,22 @@ def import_dataset(
             "Check Render environment variables."
         )
 
+    expected_provisions = sum(
+        len(act.get("provisions", []))
+        for act in valid_records
+    )
+
     batch_id = str(uuid4())
     report["import_batch_id"] = batch_id
 
-    # Register the batch before inserting any Act or provision.
-    _register_batch(client, batch_id)
+    # Record expected counts before any legislation inserts.
+    _register_batch(
+        client=client,
+        batch_id=batch_id,
+        expected_acts=len(valid_records),
+        expected_provisions=expected_provisions,
+    )
+
     report["status"] = "import_in_progress"
 
     for act in valid_records:
@@ -382,28 +400,57 @@ def import_dataset(
                     report["provisions_skipped"] += 1
 
         except Exception as exc:
-            # Do not return database messages or credentials to clients.
+            # Do not expose database messages or credentials to clients.
             report["import_errors"].append({
                 "act_title": act.get("act_title", "Unknown"),
                 "error_type": type(exc).__name__,
             })
 
+    # A batch is complete only when every expected record was inserted
+    # or already existed. Existing records are not part of this batch.
+    all_expected_records_accounted_for = (
+        report["acts_imported"] + report["acts_skipped"]
+        == len(valid_records)
+        and report["provisions_imported"]
+        + report["provisions_skipped"]
+        == expected_provisions
+    )
+
+    if not all_expected_records_accounted_for:
+        report["import_errors"].append({
+            "operation": "completeness_check",
+            "error_type": "IncompleteImport",
+        })
+
     final_status = (
-        "partial" if report["import_errors"] else "staged"
+        "staged"
+        if not report["import_errors"]
+        and all_expected_records_accounted_for
+        else "partial"
     )
 
     try:
-        _finish_batch(client, batch_id, final_status)
+        _finish_batch(
+            client=client,
+            batch_id=batch_id,
+            status=final_status,
+            imported_acts=report["acts_imported"],
+            imported_provisions=report["provisions_imported"],
+        )
     except Exception as exc:
         report["import_errors"].append({
             "operation": "batch_status_update",
             "error_type": type(exc).__name__,
         })
 
-    if report["import_errors"]:
-        report["status"] = "import_partial_or_failed"
-    else:
+    if final_status == "staged" and not report["import_errors"]:
         report["status"] = "import_completed_staged"
+    else:
+        report["status"] = "import_partial_or_failed"
+
+    report["expected_acts"] = len(valid_records)
+    report["expected_provisions"] = expected_provisions
+    report["publishing_performed"] = False
 
     return report
 
