@@ -232,9 +232,12 @@ def load_published_database_entries() -> list[dict[str, Any]]:
 
         acts_result = (
             client.table("law_acts")
+            
             .select(
-                "id, act_title, source_url, source_name, status, import_status"
+                "id, act_title, short_title, source_url, source_name, "
+                "status, import_status"
             )
+
             .eq("import_status", "published")
             .eq("status", "verified")
             .execute()
@@ -265,8 +268,22 @@ def load_published_database_entries() -> list[dict[str, Any]]:
         for provision in provisions_result.data or []:
             act = acts_by_id.get(str(provision.get("act_id")))
 
-            if act is None:
-                continue
+                if act is None:
+                    continue
+                
+                # KANOON AI: only allow the Information Technology Act, 2000.
+                act_title = str(act.get("act_title") or "").strip().lower()
+                short_title = str(act.get("short_title") or "").strip().lower()
+                
+                is_it_act = (
+                    act_title == "the information technology act, 2000"
+                    or act_title == "information technology act, 2000"
+                    or short_title == "information technology act, 2000"
+                    or short_title == "it act, 2000"
+                )
+                
+                if not is_it_act:
+                    continue
 
             label = str(provision.get("provision_label") or "").strip()
             heading = str(provision.get("heading") or "").strip()
