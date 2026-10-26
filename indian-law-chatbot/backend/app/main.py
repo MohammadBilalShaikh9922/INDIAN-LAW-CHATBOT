@@ -29,8 +29,15 @@ PDF_SOURCE_URL = (
     "blob/main/indian-law-chatbot/backend/constitution_of_india.pdf"
 )
 
+DISCLAIMER = (
+    "This is general legal information for education only, not legal advice. "
+    "Laws and their application can change. Verify sources and consult a "
+    "qualified advocate."
+)
+
 
 def load_knowledge_base() -> list[dict[str, Any]]:
+    """Load the local starter knowledge base."""
     try:
         with KB_PATH.open("r", encoding="utf-8") as file:
             data = json.load(file)
@@ -43,14 +50,16 @@ KNOWLEDGE_BASE = load_knowledge_base()
 
 
 def extract_constitution_articles() -> list[dict[str, Any]]:
-    """Extract searchable numbered provisions from the uploaded PDF."""
+    """Extract searchable numbered provisions from the Constitution PDF."""
     if not PDF_PATH.exists():
         print(f"Constitution PDF not found: {PDF_PATH}")
         return []
 
     try:
         reader = PdfReader(str(PDF_PATH))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        text = "\n".join(
+            page.extract_text() or "" for page in reader.pages
+        )
     except Exception as exc:
         print(f"Could not read Constitution PDF: {type(exc).__name__}")
         return []
@@ -80,8 +89,9 @@ def extract_constitution_articles() -> list[dict[str, Any]]:
         if not 1 <= numeric_value <= 395:
             continue
 
-        title = match.group(2).strip()
-        headings.append((match.start(), match.end(), number, title))
+        headings.append(
+            (match.start(), match.end(), number, match.group(2).strip())
+        )
 
     unique_headings = []
     seen_positions = set()
@@ -128,7 +138,6 @@ def extract_constitution_articles() -> list[dict[str, Any]]:
 
 
 CONSTITUTION_ENTRIES = extract_constitution_articles()
-ALL_ENTRIES = KNOWLEDGE_BASE + CONSTITUTION_ENTRIES
 
 
 app = FastAPI(
@@ -136,7 +145,7 @@ app = FastAPI(
     description=(
         "Educational legal-information retrieval prototype. Not legal advice."
     ),
-    version="1.2.0",
+    version="1.3.0",
 )
 
 
@@ -154,7 +163,7 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "x-import-token"],
 )
 
 
@@ -176,11 +185,111 @@ class ChatResponse(BaseModel):
     disclaimer: str
 
 
-DISCLAIMER = (
-    "This is general legal information for education only, not legal advice. "
-    "Laws and their application can change. Verify sources and consult a "
-    "qualified advocate."
-)
+def load_published_database_entries() -> list[dict[str, Any]]:
+    """
+    Load only provisions whose Act and provision are explicitly published.
+
+    An Act must also have status='verified'. The import workflow status and
+    the legal-verification status are separate fields.
+
+    If Supabase is unavailable, local knowledge remains available, but
+    database-backed legislation is omitted.
+    """
+    try:
+        client = get_supabase_client()
+
+        if client is None:
+            return []
+
+        acts_result = (
+            client.table("law_acts")
+            .select(
+                "id, act_title, source_url, source_name, status, import_status"
+            )
+            .eq("import_status", "published")
+            .eq("status", "verified")
+            .execute()
+        )
+
+        published_acts = acts_result.data or []
+
+        if not published_acts:
+            return []
+
+        acts_by_id = {
+            str(act["id"]): act
+            for act in published_acts
+        }
+
+        provisions_result = (
+            client.table("law_provisions")
+            .select(
+                "act_id, provision_label, heading, provision_text, "
+                "source_url, language, import_status"
+            )
+            .eq("import_status", "published")
+            .execute()
+        )
+
+        entries = []
+
+        for provision in provisions_result.data or []:
+            act = acts_by_id.get(str(provision.get("act_id")))
+
+            # Never expose provisions whose parent Act is not verified
+            # and explicitly published.
+            if act is None:
+                continue
+
+            label = str(provision.get("provision_label") or "").strip()
+            heading = str(provision.get("heading") or "").strip()
+            body = str(provision.get("provision_text") or "").strip()
+
+            if not label or not body:
+                continue
+
+            title = f"{act['act_title']} — {label}"
+            if heading:
+                title += f": {heading}"
+
+            entries.append({
+                "id": f"law-{act['id']}-{label}",
+                "title": title,
+                "act": act["act_title"],
+                "provision": label,
+                "summary": body[:10000],
+                "keywords": [
+                    act["act_title"],
+                    label,
+                    heading,
+                    provision.get("language") or "English",
+                ],
+                "source_title": act.get("source_name") or act["act_title"],
+                "source_url": (
+                    provision.get("source_url")
+                    or act.get("source_url")
+                    or ""
+                ),
+            })
+
+        return entries
+
+    except Exception as exc:
+        # Keep database details out of public API responses.
+        print(
+            "Published legislation retrieval failed: "
+            f"{type(exc).__name__}"
+        )
+        return []
+
+
+def get_all_entries() -> list[dict[str, Any]]:
+    """Combine local entries with explicitly published database provisions."""
+    return (
+        KNOWLEDGE_BASE
+        + CONSTITUTION_ENTRIES
+        + load_published_database_entries()
+    )
 
 
 def normalize(text: str) -> str:
@@ -240,11 +349,12 @@ def retrieve(
     limit: int = 3,
 ) -> list[tuple[float, dict[str, Any]]]:
     article_number = requested_article(query)
+    entries = get_all_entries()
 
     if article_number:
         exact = [
             item
-            for item in CONSTITUTION_ENTRIES
+            for item in entries
             if str(item.get("provision", "")).upper()
             == f"ARTICLE {article_number}"
         ]
@@ -252,12 +362,12 @@ def retrieve(
         if exact:
             return [(1000.0, exact[0])]
 
-        # Do not substitute an unrelated article.
+        # Never substitute an unrelated Article.
         return []
 
     scored = [
         (score_entry(query, item), item)
-        for item in ALL_ENTRIES
+        for item in entries
     ]
 
     scored = [
@@ -282,17 +392,19 @@ def root() -> dict[str, str]:
 
 @app.get("/api/health")
 def health() -> dict[str, str | int]:
+    entries = get_all_entries()
+
     return {
         "name": "AI Powered Indian Law Chatbot",
         "status": "ok",
-        "knowledge_entries": len(ALL_ENTRIES),
+        "knowledge_entries": len(entries),
         "constitution_articles_loaded": len(CONSTITUTION_ENTRIES),
     }
 
 
 @app.get("/api/db-health")
 def database_health() -> dict[str, Any]:
-    """Verify that Supabase credentials and both law tables are accessible."""
+    """Verify Supabase credentials and both law tables are accessible."""
     try:
         client = get_supabase_client()
 
@@ -332,7 +444,6 @@ def database_health() -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        # Do not return database credentials or raw error details to users.
         print(
             "Supabase health check failed: "
             f"{type(exc).__name__}"
@@ -348,11 +459,16 @@ def database_health() -> dict[str, Any]:
 
 @app.get("/api/laws")
 def laws() -> dict[str, Any]:
+    """Return local entries and explicitly published database provisions."""
+    entries = get_all_entries()
+
     return {
-        "count": len(ALL_ENTRIES),
+        "count": len(entries),
         "notice": (
-            "Includes the starter dataset and numbered provisions extracted "
-            "from the uploaded Constitution PDF. Extraction requires verification."
+            "Includes the starter dataset, numbered provisions extracted "
+            "from the uploaded Constitution PDF, and provisions from "
+            "database Acts explicitly marked verified and published. "
+            "PDF extraction requires verification."
         ),
         "items": [
             {
@@ -362,7 +478,7 @@ def laws() -> dict[str, Any]:
                 "provision": item.get("provision"),
                 "source_url": item.get("source_url", ""),
             }
-            for item in ALL_ENTRIES
+            for item in entries
         ],
     }
 
@@ -375,17 +491,17 @@ def chat(request: ChatRequest) -> ChatResponse:
     if not matches:
         if requested_article(query):
             answer = (
-                "I could not reliably locate that exact Article in the text "
-                "extracted from the uploaded Constitution PDF. No unrelated "
-                "Article has been substituted. The PDF edition or its heading "
+                "I could not reliably locate that exact Article in the "
+                "available local and published text. No unrelated Article "
+                "has been substituted. The source edition or its heading "
                 "format may need checking."
             )
         else:
             answer = (
                 "I could not find a sufficiently relevant provision in the "
-                "available knowledge base. That does not mean the law or right "
-                "does not exist. Try naming the Act, Article, section, or topic "
-                "and verify the result against an authoritative source."
+                "available knowledge base. That does not mean the law or "
+                "right does not exist. Try naming the Act, Article, section, "
+                "or topic and verify the result against an authoritative source."
             )
 
         return ChatResponse(
@@ -396,7 +512,6 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
 
     top_score, top = matches[0]
-
     sources = []
 
     for _, item in matches:
@@ -413,15 +528,15 @@ def chat(request: ChatRequest) -> ChatResponse:
         answer = (
             f"**{top['title']}**\n\n"
             f"{top['summary']}\n\n"
-            "This text was extracted from the uploaded PDF and has not yet "
+            "This text was extracted from the uploaded PDF and has not "
             "been independently checked for extraction errors or edition "
-            "currency. Please compare it with the official published Constitution."
+            "currency. Compare it with the official published Constitution."
         )
     else:
         answer = (
             f"**{top['title']}**\n\n{top['summary']}\n\n"
             "This is a short starter summary, not a full statement of the law. "
-            "Check the linked source for the authoritative text and current status."
+            "Check the linked source for authoritative text and current status."
         )
 
     confidence = "moderate" if top_score >= 2.0 else "low"
@@ -433,29 +548,30 @@ def chat(request: ChatRequest) -> ChatResponse:
         disclaimer=DISCLAIMER,
     )
 
+
 @app.get("/api/legislation/validate")
-def validate_legislation_dataset():
+def validate_legislation_dataset() -> dict[str, Any]:
     try:
-        report = import_dataset(
+        return import_dataset(
             file_path=default_dataset_path(),
             dry_run=True,
         )
-        return report
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Legislation dataset file was not found.",
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        print(
+            "Dataset validation failed: "
+            f"{type(exc).__name__}"
         )
-    except Exception:
         raise HTTPException(
             status_code=500,
-            detail="Dataset validation failed. Check the backend logs.",
-        )
+            detail="Dataset validation failed. Check backend logs.",
+        ) from None
 
 
 @app.post("/api/legislation/import")
@@ -483,24 +599,17 @@ def import_legislation(
         )
 
     try:
-        report = import_dataset(
+        return import_dataset(
             file_path=default_dataset_path(),
             dry_run=False,
         )
-        return report
-
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Legislation dataset file was not found.",
         )
-
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        )
-
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         print(
             "Legislation import failed: "
@@ -508,9 +617,8 @@ def import_legislation(
         )
         raise HTTPException(
             status_code=500,
-            detail="Legislation import failed. Check the backend logs.",
+            detail="Legislation import failed. Check backend logs.",
         ) from None
-
 
 
 @app.get("/api/legislation/preview")
@@ -518,19 +626,13 @@ def preview_legislation_import() -> dict[str, Any]:
     """Preview legislation import without writing to the database."""
     try:
         return preview_dataset(file_path=default_dataset_path())
-
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Legislation dataset file was not found.",
         )
-
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        )
-
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         print(
             "Legislation preview failed: "
