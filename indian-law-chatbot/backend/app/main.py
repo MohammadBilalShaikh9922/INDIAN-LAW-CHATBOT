@@ -217,12 +217,10 @@ class LegislationReviewRequest(BaseModel):
 # Published legislation retrieval
 # ---------------------------------------------------------------------
 
+
 def load_published_database_entries() -> list[dict[str, Any]]:
     """
-    Load only provisions whose parent Act and provision are published.
-
-    The parent Act must also be legally verified. Import status and
-    legal-verification status are separate fields.
+    Load published provisions from verified Information Technology Act records.
     """
     try:
         client = get_supabase_client()
@@ -232,12 +230,10 @@ def load_published_database_entries() -> list[dict[str, Any]]:
 
         acts_result = (
             client.table("law_acts")
-            
             .select(
                 "id, act_title, short_title, source_url, source_name, "
                 "status, import_status"
             )
-
             .eq("import_status", "published")
             .eq("status", "verified")
             .execute()
@@ -268,26 +264,43 @@ def load_published_database_entries() -> list[dict[str, Any]]:
         for provision in provisions_result.data or []:
             act = acts_by_id.get(str(provision.get("act_id")))
 
-                if act is None:
-                    continue
-                
-                # KANOON AI: only allow the Information Technology Act, 2000.
-                act_title = str(act.get("act_title") or "").strip().lower()
-                short_title = str(act.get("short_title") or "").strip().lower()
-                
-                is_it_act = (
-                    act_title == "the information technology act, 2000"
-                    or act_title == "information technology act, 2000"
-                    or short_title == "information technology act, 2000"
-                    or short_title == "it act, 2000"
-                )
-                
-                if not is_it_act:
-                    continue
+            if act is None:
+                continue
 
-            label = str(provision.get("provision_label") or "").strip()
-            heading = str(provision.get("heading") or "").strip()
-            body = str(provision.get("provision_text") or "").strip()
+            # Allow only the Information Technology Act, 2000.
+            act_title = str(
+                act.get("act_title") or ""
+            ).strip().lower()
+
+            short_title = str(
+                act.get("short_title") or ""
+            ).strip().lower()
+
+            is_it_act = (
+                act_title in {
+                    "the information technology act, 2000",
+                    "information technology act, 2000",
+                }
+                or short_title in {
+                    "information technology act, 2000",
+                    "it act, 2000",
+                }
+            )
+
+            if not is_it_act:
+                continue
+
+            label = str(
+                provision.get("provision_label") or ""
+            ).strip()
+
+            heading = str(
+                provision.get("heading") or ""
+            ).strip()
+
+            body = str(
+                provision.get("provision_text") or ""
+            ).strip()
 
             if not label or not body:
                 continue
@@ -309,7 +322,9 @@ def load_published_database_entries() -> list[dict[str, Any]]:
                     heading,
                     provision.get("language") or "English",
                 ],
-                "source_title": act.get("source_name") or act["act_title"],
+                "source_title": (
+                    act.get("source_name") or act["act_title"]
+                ),
                 "source_url": (
                     provision.get("source_url")
                     or act.get("source_url")
@@ -327,13 +342,11 @@ def load_published_database_entries() -> list[dict[str, Any]]:
         return []
 
 
+
 def get_all_entries() -> list[dict[str, Any]]:
-    """Combine local entries with explicitly published database provisions."""
-    return (
-        KNOWLEDGE_BASE
-        + CONSTITUTION_ENTRIES
-        + load_published_database_entries()
-    )
+    """Return published provisions from the Information Technology Act only."""
+    return load_published_database_entries()
+
 
 
 # ---------------------------------------------------------------------
@@ -358,6 +371,17 @@ def requested_article(query: str) -> str | None:
         re.IGNORECASE,
     )
     return match.group(1).upper() if match else None
+
+
+def requested_section(query: str) -> str | None:
+    """Extract an IT Act section number, such as 43, 66C, or 3A."""
+    match = re.search(
+        r"\b(?:section|sec\.?|s\.)\s*(\d{1,3}[a-z]?)\b",
+        query,
+        re.IGNORECASE,
+    )
+    return match.group(1).upper() if match else None
+
 
 
 def score_entry(query: str, entry: dict[str, Any]) -> float:
@@ -392,18 +416,39 @@ def score_entry(query: str, entry: dict[str, Any]) -> float:
     return overlap / (len(q_tokens) ** 0.5) + 0.75 * title_overlap
 
 
+
 def retrieve(
     query: str,
     limit: int = 3,
 ) -> list[tuple[float, dict[str, Any]]]:
+    section_number = requested_section(query)
     article_number = requested_article(query)
     entries = get_all_entries()
 
+    # Exact IT Act section lookup.
+    if section_number:
+        exact = [
+            item
+            for item in entries
+            if str(item.get("provision", "")).strip().upper()
+            in {
+                section_number,
+                f"SECTION {section_number}",
+                f"SEC. {section_number}",
+            }
+        ]
+
+        if exact:
+            return [(1000.0, exact[0])]
+
+        return []
+
+    # Preserve existing Article lookup for now.
     if article_number:
         exact = [
             item
             for item in entries
-            if str(item.get("provision", "")).upper()
+            if str(item.get("provision", "")).strip().upper()
             == f"ARTICLE {article_number}"
         ]
 
@@ -426,6 +471,7 @@ def retrieve(
     scored.sort(key=lambda pair: pair[0], reverse=True)
 
     return scored[:limit]
+
 
 
 # ---------------------------------------------------------------------
@@ -694,27 +740,64 @@ def laws() -> dict[str, Any]:
 # Chat endpoint with basic conversation context
 # ---------------------------------------------------------------------
 
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     query = request.message.strip().strip("\"'“”‘’").strip()
-    query_lower = query.lower()
-    history = request.history[-10:]
 
+    if not query:
+        return ChatResponse(
+            answer="Please enter a question about the Information Technology Act, 2000.",
+            sources=[],
+            confidence="low",
+            disclaimer=DISCLAIMER,
+        )
+
+    query_lower = query.lower()
+
+    # Explicitly reject questions asking about other laws or court judgments.
+    out_of_scope_terms = (
+        "constitution of india",
+        "article 21",
+        "bharatiya nyaya sanhita",
+        "indian penal code",
+        "code of criminal procedure",
+        "civil procedure code",
+        "supreme court judgment",
+        "high court judgment",
+        "court judgment",
+        "case law",
+        "case-law",
+        "precedent",
+    )
+
+    if any(term in query_lower for term in out_of_scope_terms):
+        return ChatResponse(
+            answer=(
+                "I am KANOON AI CHATBOT, an assistant limited to the "
+                "Information Technology Act, 2000. I cannot explain other "
+                "Acts, constitutional provisions, or court judgments. "
+                "Please ask a question specifically about a provision or "
+                "topic covered by the Information Technology Act, 2000."
+            ),
+            sources=[],
+            confidence="low",
+            disclaimer=DISCLAIMER,
+        )
+
+    # Use conversation history only to clarify short follow-up questions.
+    history = request.history[-10:]
     previous_user_questions = [
         item.content.strip().strip("\"'“”‘’").strip()
         for item in history
         if item.role == "user" and item.content.strip()
     ]
 
-    # The frontend may include the current question in history.
-    # Do not accidentally treat it as the previous question.
     previous_question = ""
     for question in reversed(previous_user_questions):
         if question.lower() != query_lower:
             previous_question = question
             break
-
-    previous_lower = previous_question.lower()
 
     follow_up_starters = (
         "what about",
@@ -737,125 +820,35 @@ def chat(request: ChatRequest) -> ChatResponse:
         and any(query_lower.startswith(s) for s in follow_up_starters)
     )
 
-    privacy_question = "privacy" in query_lower
+    search_query = query
 
-    privacy_follow_up = (
-        privacy_question
-        and (
-            "article 21" in previous_lower
-            or "right to life" in previous_lower
-            or "personal liberty" in previous_lower
-        )
-    )
+    if is_short_follow_up and previous_question:
+        search_query = f"{previous_question} {query}"
 
-    theft_question = any(
-        term in query_lower
-        for term in (
-            "theft",
-            "stealing",
-            "stolen property",
-            "punishment for stealing",
-        )
-    )
+    matches = retrieve(search_query)
 
-    # Never substitute a random constitutional Article for a question
-    # about privacy or criminal punishment.
-    if privacy_question:
-        matches = retrieve("Article 21")
-    
-    elif theft_question:
-        theft_candidates = []
-
-        for item in get_all_entries():
-            act = str(item.get("act", "")).lower()
-            title = str(item.get("title", "")).lower()
-            provision = str(item.get("provision", "")).lower()
-            keywords = item.get("keywords", [])
-            if not isinstance(keywords, list):
-                keywords = []
-
-            searchable_keywords = " ".join(
-                str(keyword).lower() for keyword in keywords
-            )
-
-            is_bns = "bharatiya nyaya sanhita" in act
-            is_theft_entry = (
-                "theft" in title
-                or "theft" in searchable_keywords
-                or "section 303" in provision
-                or "section 303" in searchable_keywords
-            )
-
-            if is_bns and is_theft_entry:
-                theft_candidates.append((5.0, item))
-
-        matches = theft_candidates[:10]
-
-    else:
-        search_query = query
-
-        if is_short_follow_up and previous_question:
-            search_query = f"{previous_question} {query}"
-
-        matches = retrieve(search_query)
-
-        # Retry the user's actual question if contextual retrieval fails.
-        if not matches and search_query != query:
-            matches = retrieve(query)
-
-    # Privacy requires case-law context that may not exist in this dataset.
-    if privacy_question and not matches:
-        answer = (
-            "Article 21 of the Constitution of India is relevant to the "
-            "constitutional discussion of life and personal liberty. "
-            "However, the available local dataset does not provide enough "
-            "verified case-law material to explain the right to privacy "
-            "in detail. Consult the relevant Supreme Court judgment and "
-            "an authoritative legal source."
-        )
-
-        return ChatResponse(
-            answer=answer,
-            sources=[],
-            confidence="low",
-            disclaimer=DISCLAIMER,
-        )
-
-    # Do not invent a criminal-law answer when the relevant provision
-    # has not been retrieved from the available legal dataset.
-    if theft_question and not matches:
-        answer = (
-            "I could not retrieve a sufficiently relevant, verified "
-            "criminal-law provision for this theft question from the "
-            "currently available dataset. I will not substitute an "
-            "unrelated constitutional Article. The applicable provision "
-            "depends on the facts and the law in force. Please check the "
-            "official text of the applicable criminal law or consult "
-            "a qualified advocate."
-        )
-
-        return ChatResponse(
-            answer=answer,
-            sources=[],
-            confidence="low",
-            disclaimer=DISCLAIMER,
-        )
+    # Retry without conversation context if it did not find a result.
+    if not matches and search_query != query:
+        matches = retrieve(query)
 
     if not matches:
-        if requested_article(query):
+        section_number = requested_section(query)
+
+        if section_number:
             answer = (
-                "I could not reliably locate that exact Article in the "
-                "available local and published text. No unrelated Article "
-                "has been substituted. The source edition or its heading "
-                "format may need checking."
+                f"I could not find an exact published, verified IT Act "
+                f"provision for Section {section_number} in the available "
+                "database. No substitute section has been used. The "
+                "Information Technology Act dataset may still require "
+                "review and publication."
             )
         else:
             answer = (
                 "I could not find a sufficiently relevant provision in "
-                "the available knowledge base. This does not mean the law "
-                "or right does not exist. Try naming the Act, Article, "
-                "section, or topic, and verify the result against an "
-                "authoritative source."
+                "the available published, verified text of the Information "
+                "Technology Act, 2000. I will not guess or use another "
+                "Act to fill the gap. Try specifying an IT Act section "
+                "number or a topic covered by the Act."
             )
 
         return ChatResponse(
@@ -867,14 +860,13 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     top_score, top = matches[0]
 
-    # Require a minimum retrieval score for ordinary questions.
-    # Explicit Article lookups use the exact-match score from retrieve().
-    if top_score < 1.0 and not requested_article(query):
+    if top_score < 1.0 and not requested_section(query):
         return ChatResponse(
             answer=(
-                "The available results do not match your question closely "
-                "enough for a reliable answer. Please provide a more "
-                "specific legal topic or the name of the relevant Act."
+                "The available IT Act provisions do not match your question "
+                "closely enough for a reliable answer. Please provide a "
+                "specific section number or a more focused topic from the "
+                "Information Technology Act, 2000."
             ),
             sources=[],
             confidence="low",
@@ -885,9 +877,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     seen_urls = set()
 
     for _, item in matches:
-        source_url = str(
-            item.get("source_url", PDF_SOURCE_URL)
-        ).strip()
+        source_url = str(item.get("source_url") or "").strip()
 
         if (
             not source_url.startswith(("https://", "http://"))
@@ -902,7 +892,7 @@ def chat(request: ChatRequest) -> ChatResponse:
                 title=str(
                     item.get(
                         "source_title",
-                        item.get("title", "Legal source"),
+                        item.get("title", "Information Technology Act, 2000"),
                     )
                 ),
                 url=source_url,
@@ -911,36 +901,32 @@ def chat(request: ChatRequest) -> ChatResponse:
             )
         )
 
-    if (
-        top.get("act") == "Constitution of India"
-        and top.get("provision")
-    ):
-        answer = (
-            f"**{top['title']}**\n\n"
-            f"{top['summary']}\n\n"
-            "This text was extracted from the uploaded PDF and has not "
-            "been independently checked for extraction errors or edition "
-            "currency. Compare it with the official published Constitution."
+    title = str(top.get("title") or "Information Technology Act provision")
+    summary = str(top.get("summary") or "").strip()
+    provision = str(top.get("provision") or "").strip()
+
+    if not summary:
+        return ChatResponse(
+            answer=(
+                "A matching IT Act record was found, but it does not contain "
+                "enough provision text to produce a reliable explanation. "
+                "Please verify the source text before relying on it."
+            ),
+            sources=sources,
+            confidence="low",
+            disclaimer=DISCLAIMER,
         )
 
-        if privacy_question:
-            answer += (
-                "\n\n**About the right to privacy:** Article 21 is relevant "
-                "to the constitutional discussion of life and personal "
-                "liberty. The available Constitution text does not itself "
-                "provide the Supreme Court's full case-law interpretation "
-                "of privacy. Consult the relevant judgment and an "
-                "authoritative legal source before relying on a detailed "
-                "interpretation."
-            )
-    else:
-        answer = (
-            f"**{top['title']}**\n\n"
-            f"{top['summary']}\n\n"
-            "This is a short starter summary, not a complete statement "
-            "of the law. Check the linked source for authoritative text "
-            "and current status."
-        )
+    answer = f"**{title}**\n\n{summary}"
+
+    if provision:
+        answer += f"\n\n**Provision:** {provision}"
+
+    answer += (
+        "\n\nThis response is based only on the available published IT Act "
+        "dataset. Verify the provision against the official Act text before "
+        "relying on it."
+    )
 
     confidence = "moderate" if top_score >= 2.0 else "low"
 
