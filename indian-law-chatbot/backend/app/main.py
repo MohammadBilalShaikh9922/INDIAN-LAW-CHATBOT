@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -456,3 +456,57 @@ def validate_legislation_dataset():
             status_code=500,
             detail="Dataset validation failed. Check the backend logs.",
         )
+
+
+@app.post("/api/legislation/import")
+def import_legislation(
+    x_import_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Import legislation only when a valid private token is supplied."""
+    import secrets
+
+    expected_token = os.getenv("LEGISLATION_IMPORT_TOKEN", "")
+
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Legislation import is not configured.",
+        )
+
+    if (
+        not x_import_token
+        or not secrets.compare_digest(x_import_token, expected_token)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing import token.",
+        )
+
+    try:
+        report = import_dataset(
+            file_path=default_dataset_path(),
+            dry_run=False,
+        )
+        return report
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Legislation dataset file was not found.",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        print(
+            "Legislation import failed: "
+            f"{type(exc).__name__}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Legislation import failed. Check the backend logs.",
+        ) from None
