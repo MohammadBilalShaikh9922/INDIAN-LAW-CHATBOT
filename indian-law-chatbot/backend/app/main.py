@@ -13,6 +13,10 @@ from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from app.database import get_supabase_client
+from app.legislation_importer import (
+    default_dataset_path,
+    import_dataset,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -428,3 +432,27 @@ def chat(request: ChatRequest) -> ChatResponse:
         confidence=confidence,
         disclaimer=DISCLAIMER,
     )
+
+@app.get("/api/legislation/validate")
+def validate_legislation_dataset():
+    try:
+        report = import_dataset(
+            file_path=default_dataset_path(),
+            dry_run=True,
+        )
+        return report
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Legislation dataset file was not found.",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Dataset validation failed. Check the backend logs.",
+        )
