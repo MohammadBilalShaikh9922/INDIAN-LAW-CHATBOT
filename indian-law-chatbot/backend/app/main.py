@@ -746,7 +746,17 @@ def chat(request: ChatRequest) -> ChatResponse:
     if privacy_question:
         matches = retrieve("Article 21")
     elif theft_question:
-        matches = []
+        matches = retrieve(query, limit=10)
+        matches = [
+            (score, item)
+            for score, item in matches
+            if "bharatiya nyaya sanhita" in str(item.get("act", "")).lower()
+            and (
+                "theft" in str(item.get("title", "")).lower()
+                or "theft" in str(item.get("summary", "")).lower()
+                or "theft" in " ".join(item.get("keywords", [])).lower()
+            )
+        ]
     else:
         search_query = query
 
@@ -779,7 +789,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     # Do not invent a criminal-law answer when the relevant provision
     # has not been retrieved from the available legal dataset.
-    if theft_question:
+    if theft_question and not matches:
         answer = (
             "I could not retrieve a sufficiently relevant, verified "
             "criminal-law provision for this theft question from the "
