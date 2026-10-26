@@ -128,3 +128,69 @@
     "source_url": "https://nalsa.gov.in/"
   }
 ]
+
+
+
+  {
+    "id": "bns-section-303-theft",
+    "title": "Theft — Section 303",
+    "act": "Bharatiya Nyaya Sanhita, 2023",
+    "provision": "Section 303",
+    "summary": "Section 303 defines theft and provides its punishment. The general punishment may extend to three years of imprisonment, or a fine, or both. For a second or subsequent conviction under this section, the provision prescribes rigorous imprisonment of at least one year and up to five years, along with a fine. A special proviso addresses a first conviction involving stolen property worth less than ₹5,000 where the property is returned or its value is restored; community service is prescribed in those circumstances. The applicable outcome depends on the statutory conditions and facts.",
+    "keywords": [
+      "theft",
+      "stealing",
+      "stolen property",
+      "punishment for theft",
+      "punishment for stealing",
+      "section 303",
+      "bns 303",
+      "bharatiya nyaya sanhita",
+      "criminal law",
+      "fine",
+      "imprisonment"
+    ],
+    "source_title": "India Code — Bharatiya Nyaya Sanhita, 2023",
+    "source_url": "https://www.indiacode.nic.in/bitstream/123456789/20062/1/a2023-45.pdf"
+  },
+  {
+    "id": "bns-section-304-snatching",
+    "title": "Snatching — Section 304",
+    "act": "Bharatiya Nyaya Sanhita, 2023",
+    "provision": "Section 304",
+    "summary": "Section 304 defines snatching as a form of theft involving the sudden, quick, or forcible seizure or taking away of movable property from a person or their possession. The prescribed punishment may extend to three years of imprisonment, and the offender is also liable to a fine. Whether the facts satisfy this provision depends on the circumstances.",
+    "keywords": [
+      "snatching",
+      "phone snatching",
+      "chain snatching",
+      "purse snatching",
+      "mobile theft",
+      "section 304",
+      "bns 304",
+      "theft from a person",
+      "criminal law"
+    ],
+    "source_title": "India Code — Bharatiya Nyaya Sanhita, 2023",
+    "source_url": "https://www.indiacode.nic.in/bitstream/123456789/20062/1/a2023-45.pdf"
+  },
+  {
+    "id": "bns-section-305-aggravated-theft",
+    "title": "Theft in specified locations or of specified property — Section 305",
+    "act": "Bharatiya Nyaya Sanhita, 2023",
+    "provision": "Section 305",
+    "summary": "Section 305 addresses specified forms of theft, including theft in a building, tent, or vessel used as a human dwelling or for custody of property; theft involving certain means of transport; theft of an idol or icon in a place of worship; and theft of government or local-authority property. The prescribed punishment may extend to seven years of imprisonment, and the offender is also liable to a fine. The specific statutory conditions must be checked against the facts.",
+    "keywords": [
+      "theft in house",
+      "house theft",
+      "theft in dwelling",
+      "theft from vehicle",
+      "theft on transport",
+      "theft in place of worship",
+      "government property theft",
+      "section 305",
+      "bns 305",
+      "aggravated theft"
+    ],
+    "source_title": "India Code — Bharatiya Nyaya Sanhita, 2023",
+    "source_url": "https://www.indiacode.nic.in/bitstream/123456789/20062/1/a2023-45.pdf"
+  }
