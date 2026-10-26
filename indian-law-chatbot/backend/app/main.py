@@ -674,10 +674,44 @@ def laws() -> dict[str, Any]:
     }
 
 
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     query = request.message.strip()
-    matches = retrieve(query)
+
+    # Use recent conversation only to clarify short follow-up questions.
+    history = request.history[-10:]
+    previous_user_questions = [
+        item.content.strip()
+        for item in history
+        if item.role == "user" and item.content.strip()
+    ]
+
+    follow_up_starters = (
+        "what about", "what is the punishment", "what is its punishment",
+        "what are the penalties", "explain that", "tell me more",
+        "what does this mean", "and what about", "what happens if",
+        "is it legal", "can i", "does this also", "what is the process"
+    )
+
+    standalone_query = query.lower()
+    is_short_follow_up = (
+        len(query.split()) <= 12
+        and any(standalone_query.startswith(s) for s in follow_up_starters)
+    )
+
+    # If the question is clearly a follow-up, add the latest user question
+    # as context. The legal database still determines the answer and sources.
+    search_query = query
+    if is_short_follow_up and previous_user_questions:
+        search_query = (
+            f"{previous_user_questions[-1]} {query}"
+        )
+
+    matches = retrieve(search_query)
+
+    if not matches and search_query != query:
+        matches = retrieve(query)
 
     if not matches:
         if requested_article(query):
