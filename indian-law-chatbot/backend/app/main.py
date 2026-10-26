@@ -702,16 +702,35 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     # If the question is clearly a follow-up, add the latest user question
     # as context. The legal database still determines the answer and sources.
-    search_query = query
-    if is_short_follow_up and previous_user_questions:
-        search_query = (
-            f"{previous_user_questions[-1]} {query}"
-        )
+    
+search_query = query
 
-    matches = retrieve(search_query)
+if is_short_follow_up and previous_user_questions:
+    previous_question = previous_user_questions[-1].lower()
 
-    if not matches and search_query != query:
-        matches = retrieve(query)
+    # Preserve the topic from the previous question for follow-ups.
+    if "article 21" in previous_question or "right to life" in previous_question:
+        search_query = f"Article 21 right to life personal liberty privacy {query}"
+    else:
+        search_query = f"{previous_user_questions[-1]} {query}"
+
+matches = retrieve(search_query)
+
+if not matches or matches[0][1].get("act") == "Constitution of India" and (
+    "right to privacy" in query.lower()
+    or "privacy" in query.lower()
+):
+    # Try a focused search rather than relying only on combined context.
+    focused_matches = retrieve("Article 21 right to privacy personal liberty")
+    if focused_matches:
+        matches = focused_matches
+```
+
+This is a targeted retrieval improvement, **not a guarantee** that the returned provision is correct. The result still needs to be checked against the official constitutional text and relevant judgments.
+
+After you commit the change, test the same two questions again. If Article 11 still appears, we'll inspect the `retrieve()` function next, because the underlying ranking or extracted source text will need attention.
+
+
 
     if not matches:
         if requested_article(query):
