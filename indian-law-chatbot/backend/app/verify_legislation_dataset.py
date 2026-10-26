@@ -4,87 +4,101 @@ import re
 from collections import Counter
 from pathlib import Path
 
-
-DATASET_PATH = Path(__file__).parent / "data" / "central_acts.json"
+DATASET_PATH = (
+    Path(__file__).parent / "data" / "central_acts.json"
+)
 
 
 def main():
-    if not DATASET_PATH.exists():
-        print(f"ERROR: Dataset not found: {DATASET_PATH}")
-        return
-
     try:
-        data = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"ERROR: Could not read dataset: {exc}")
+        data = json.loads(
+            DATASET_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"ERROR: Cannot read dataset: {exc}")
         return
 
-    acts = data.get("acts", []) if isinstance(data, dict) else data
-
-    if not isinstance(acts, list):
-        print("ERROR: Expected a list of Acts.")
+    if not isinstance(data, list):
+        print("ERROR: Expected the dataset to be a list.")
         return
 
     print("NYAYAAI DATASET STRUCTURE REPORT")
-    print("=" * 40)
-    print(f"Dataset: {DATASET_PATH.name}")
-    print(f"Acts found: {len(acts)}")
+    print("=" * 42)
+    print(f"Acts found: {len(data)}")
 
-    for act_index, act in enumerate(acts, start=1):
+    for index, act in enumerate(data, start=1):
         if not isinstance(act, dict):
-            print(f"ERROR: Act entry {act_index} is not an object.")
+            print(f"ERROR: Act {index} is not an object.")
             continue
 
-        title = act.get("title", act.get("name", "Untitled Act"))
-        provisions = act.get(
-            "provisions",
-            act.get("sections", [])
-        )
+        title = act.get("act_title", "Untitled Act")
+        provisions = act.get("provisions", [])
+
+        print(f"\nAct {index}: {title}")
+        print(f"Act status in file: {act.get('status', 'missing')}")
 
         if not isinstance(provisions, list):
-            print(f"ERROR: Provisions for {title} are not a list.")
+            print("ERROR: provisions is not a list.")
             continue
 
-        print(f"\nAct {act_index}: {title}")
-        print(f"Provision records: {len(provisions)}")
-
         labels = []
+        blank_labels = 0
+        blank_headings = 0
+        blank_text = 0
+
         for provision in provisions:
             if not isinstance(provision, dict):
+                blank_labels += 1
                 continue
 
-            label = provision.get(
-                "section_number",
-                provision.get(
-                    "section",
-                    provision.get("number", "")
-                )
-            )
-            if label != "":
-                labels.append(str(label).strip())
+            label = str(
+                provision.get("provision_label", "")
+            ).strip()
+
+            if not label:
+                blank_labels += 1
+            else:
+                labels.append(label)
+
+            if not str(provision.get("heading", "")).strip():
+                blank_headings += 1
+
+            if not str(
+                provision.get("provision_text", "")
+            ).strip():
+                blank_text += 1
 
         counts = Counter(labels)
         duplicates = sorted(
-            label for label, count in counts.items() if count > 1
+            label for label, count in counts.items()
+            if count > 1
         )
 
-        print(f"Records with section labels: {len(labels)}")
-        print(f"Unique section labels: {len(set(labels))}")
-        print(f"Duplicate labels: {duplicates or 'None detected'}")
+        print(f"Provision records: {len(provisions)}")
+        print(f"Labels found: {len(labels)}")
+        print(f"Unique labels: {len(set(labels))}")
+        print(f"Duplicate labels: {duplicates or 'None'}")
+        print(f"Blank labels: {blank_labels}")
+        print(f"Blank headings: {blank_headings}")
+        print(f"Blank provision text: {blank_text}")
+        print(f"First labels: {labels[:15]}")
+        print(f"Last labels: {labels[-10:]}")
 
-        missing_labels = [
-            index for index, label in enumerate(labels, start=1)
-            if not label
+        # Flag obvious label-format anomalies for manual inspection.
+        unusual = [
+            label for label in labels
+            if not re.fullmatch(
+                r"\d+[A-Za-z]?", label
+            )
         ]
-        print(f"Blank section labels: {len(missing_labels)}")
+        print(
+            "Labels needing manual inspection:",
+            unusual[:30] or "None detected"
+        )
 
-        print("Sample labels:", labels[:15])
-        print("Final labels:", labels[-10:])
-
-    print("\n" + "=" * 40)
-    print("This report checks structure only.")
-    print("It does NOT verify legal accuracy or current law.")
-    print("It does NOT modify the database or publish anything.")
+    print("\n" + "=" * 42)
+    print("STRUCTURE CHECK ONLY — NOT LEGAL VERIFICATION.")
+    print("No database writes or publishing were performed.")
 
 
 if __name__ == "__main__":
