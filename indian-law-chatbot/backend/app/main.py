@@ -745,18 +745,35 @@ def chat(request: ChatRequest) -> ChatResponse:
     # about privacy or criminal punishment.
     if privacy_question:
         matches = retrieve("Article 21")
+    
     elif theft_question:
-        matches = retrieve(query, limit=10)
-        matches = [
-            (score, item)
-            for score, item in matches
-            if "bharatiya nyaya sanhita" in str(item.get("act", "")).lower()
-            and (
-                "theft" in str(item.get("title", "")).lower()
-                or "theft" in str(item.get("summary", "")).lower()
-                or "theft" in " ".join(item.get("keywords", [])).lower()
+        theft_candidates = []
+
+        for item in get_all_entries():
+            act = str(item.get("act", "")).lower()
+            title = str(item.get("title", "")).lower()
+            provision = str(item.get("provision", "")).lower()
+            keywords = item.get("keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+
+            searchable_keywords = " ".join(
+                str(keyword).lower() for keyword in keywords
             )
-        ]
+
+            is_bns = "bharatiya nyaya sanhita" in act
+            is_theft_entry = (
+                "theft" in title
+                or "theft" in searchable_keywords
+                or "section 303" in provision
+                or "section 303" in searchable_keywords
+            )
+
+            if is_bns and is_theft_entry:
+                theft_candidates.append((5.0, item))
+
+        matches = theft_candidates[:10]
+
     else:
         search_query = query
 
