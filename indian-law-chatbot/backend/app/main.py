@@ -4,8 +4,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +21,7 @@ from app.legislation_importer import (
     import_dataset,
     preview_dataset,
 )
+
 
 APP_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = APP_DIR.parent
@@ -35,6 +39,10 @@ DISCLAIMER = (
     "qualified advocate."
 )
 
+
+# ---------------------------------------------------------------------
+# Knowledge base
+# ---------------------------------------------------------------------
 
 def load_knowledge_base() -> list[dict[str, Any]]:
     """Load the local starter knowledge base."""
@@ -145,7 +153,7 @@ app = FastAPI(
     description=(
         "Educational legal-information retrieval prototype. Not legal advice."
     ),
-    version="1.3.0",
+    version="1.4.0",
 )
 
 
@@ -163,9 +171,17 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "x-import-token"],
+    allow_headers=[
+        "Content-Type",
+        "x-import-token",
+        "x-review-token",
+    ],
 )
 
+
+# ---------------------------------------------------------------------
+# Request and response models
+# ---------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=2, max_length=2000)
@@ -185,15 +201,22 @@ class ChatResponse(BaseModel):
     disclaimer: str
 
 
+class LegislationReviewRequest(BaseModel):
+    decision: str = Field(pattern=r"^(approve|reject)$")
+    reviewed_by: str = Field(min_length=2, max_length=120)
+    review_notes: str = Field(min_length=20, max_length=4000)
+
+
+# ---------------------------------------------------------------------
+# Published legislation retrieval
+# ---------------------------------------------------------------------
+
 def load_published_database_entries() -> list[dict[str, Any]]:
     """
-    Load only provisions whose Act and provision are explicitly published.
+    Load only provisions whose parent Act and provision are published.
 
-    An Act must also have status='verified'. The import workflow status and
-    the legal-verification status are separate fields.
-
-    If Supabase is unavailable, local knowledge remains available, but
-    database-backed legislation is omitted.
+    The parent Act must also be legally verified. Import status and
+    legal-verification status are separate fields.
     """
     try:
         client = get_supabase_client()
@@ -236,8 +259,6 @@ def load_published_database_entries() -> list[dict[str, Any]]:
         for provision in provisions_result.data or []:
             act = acts_by_id.get(str(provision.get("act_id")))
 
-            # Never expose provisions whose parent Act is not verified
-            # and explicitly published.
             if act is None:
                 continue
 
@@ -249,6 +270,7 @@ def load_published_database_entries() -> list[dict[str, Any]]:
                 continue
 
             title = f"{act['act_title']} — {label}"
+
             if heading:
                 title += f": {heading}"
 
@@ -275,7 +297,6 @@ def load_published_database_entries() -> list[dict[str, Any]]:
         return entries
 
     except Exception as exc:
-        # Keep database details out of public API responses.
         print(
             "Published legislation retrieval failed: "
             f"{type(exc).__name__}"
@@ -291,6 +312,10 @@ def get_all_entries() -> list[dict[str, Any]]:
         + load_published_database_entries()
     )
 
+
+# ---------------------------------------------------------------------
+# Retrieval and ranking
+# ---------------------------------------------------------------------
 
 def normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9\s]", " ", text.lower()).strip()
@@ -362,7 +387,6 @@ def retrieve(
         if exact:
             return [(1000.0, exact[0])]
 
-        # Never substitute an unrelated Article.
         return []
 
     scored = [
@@ -380,6 +404,169 @@ def retrieve(
 
     return scored[:limit]
 
+
+# ---------------------------------------------------------------------
+# Shared review and publication safeguards
+# ---------------------------------------------------------------------
+
+def require_review_token(token: str | None) -> None:
+    """Require the separate private legislation review token."""
+    expected = os.getenv("LEGISLATION_REVIEW_TOKEN", "")
+
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Legislation review is not configured.",
+        )
+
+    if not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing review token.",
+        )
+
+
+def get_batch_or_404(client: Any, batch_id: UUID) -> dict[str, Any]:
+    """Fetch an import batch without exposing database error details."""
+    try:
+        result = (
+            client.table("law_import_batches")
+            .select("*")
+            .eq("id", str(batch_id))
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        print(f"Batch lookup failed: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not check the import batch.",
+        ) from None
+
+    if not result.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Import batch not found.",
+        )
+
+    return result.data[0]
+
+
+def check_batch_completeness(
+    client: Any,
+    batch_id: UUID,
+    batch: dict[str, Any],
+) -> None:
+    """
+    Fail closed unless recorded counts match and every record belongs
+    to the batch. This does not replace human legal review.
+    """
+    expected_acts = batch.get("expected_acts")
+    expected_provisions = batch.get("expected_provisions")
+    imported_acts = batch.get("imported_acts")
+    imported_provisions = batch.get("imported_provisions")
+
+    if any(
+        value is None
+        for value in (
+            expected_acts,
+            expected_provisions,
+            imported_acts,
+            imported_provisions,
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Batch completeness counts are missing.",
+        )
+
+    if (
+        expected_acts != imported_acts
+        or expected_provisions != imported_provisions
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Expected and imported counts differ. "
+                "This batch cannot be approved."
+            ),
+        )
+
+    try:
+        acts_result = (
+            client.table("law_acts")
+            .select("id, status, import_status, import_batch_id")
+            .eq("import_batch_id", str(batch_id))
+            .execute()
+        )
+
+        provisions_result = (
+            client.table("law_provisions")
+            .select("id, act_id, import_status, import_batch_id")
+            .eq("import_batch_id", str(batch_id))
+            .execute()
+        )
+    except Exception as exc:
+        print(f"Batch completeness check failed: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify batch completeness.",
+        ) from None
+
+    acts = acts_result.data or []
+    provisions = provisions_result.data or []
+
+    if len(acts) != imported_acts:
+        raise HTTPException(
+            status_code=409,
+            detail="The Act count does not match the batch record.",
+        )
+
+    if len(provisions) != imported_provisions:
+        raise HTTPException(
+            status_code=409,
+            detail="The provision count does not match the batch record.",
+        )
+
+    if not acts or not provisions:
+        raise HTTPException(
+            status_code=409,
+            detail="The batch has no eligible Acts or provisions.",
+        )
+
+    act_ids = {str(act["id"]) for act in acts}
+
+    for act in acts:
+        if (
+            act.get("status") != "verified"
+            or act.get("import_status") != "staged"
+            or str(act.get("import_batch_id")) != str(batch_id)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Every Act must be verified and staged before approval."
+                ),
+            )
+
+    for provision in provisions:
+        if (
+            provision.get("import_status") != "staged"
+            or str(provision.get("import_batch_id")) != str(batch_id)
+            or str(provision.get("act_id")) not in act_ids
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A provision is unstaged or does not belong "
+                    "to an Act in this batch."
+                ),
+            )
+
+
+# ---------------------------------------------------------------------
+# General API endpoints
+# ---------------------------------------------------------------------
 
 @app.get("/")
 def root() -> dict[str, str]:
@@ -444,10 +631,7 @@ def database_health() -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        print(
-            "Supabase health check failed: "
-            f"{type(exc).__name__}"
-        )
+        print(f"Supabase health check failed: {type(exc).__name__}")
         raise HTTPException(
             status_code=503,
             detail=(
@@ -549,6 +733,10 @@ def chat(request: ChatRequest) -> ChatResponse:
     )
 
 
+# ---------------------------------------------------------------------
+# Legislation validation, import, and preview
+# ---------------------------------------------------------------------
+
 @app.get("/api/legislation/validate")
 def validate_legislation_dataset() -> dict[str, Any]:
     try:
@@ -560,14 +748,11 @@ def validate_legislation_dataset() -> dict[str, Any]:
         raise HTTPException(
             status_code=404,
             detail="Legislation dataset file was not found.",
-        )
+        ) from None
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except Exception as exc:
-        print(
-            "Dataset validation failed: "
-            f"{type(exc).__name__}"
-        )
+        print(f"Dataset validation failed: {type(exc).__name__}")
         raise HTTPException(
             status_code=500,
             detail="Dataset validation failed. Check backend logs.",
@@ -578,9 +763,7 @@ def validate_legislation_dataset() -> dict[str, Any]:
 def import_legislation(
     x_import_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Import legislation only when a valid private token is supplied."""
-    import secrets
-
+    """Import legislation only when a valid private import token is supplied."""
     expected_token = os.getenv("LEGISLATION_IMPORT_TOKEN", "")
 
     if not expected_token:
@@ -607,14 +790,11 @@ def import_legislation(
         raise HTTPException(
             status_code=404,
             detail="Legislation dataset file was not found.",
-        )
+        ) from None
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except Exception as exc:
-        print(
-            "Legislation import failed: "
-            f"{type(exc).__name__}"
-        )
+        print(f"Legislation import failed: {type(exc).__name__}")
         raise HTTPException(
             status_code=500,
             detail="Legislation import failed. Check backend logs.",
@@ -623,22 +803,154 @@ def import_legislation(
 
 @app.get("/api/legislation/preview")
 def preview_legislation_import() -> dict[str, Any]:
-    """Preview legislation import without writing to the database."""
+    """Preview a legislation import without writing to Supabase."""
     try:
         return preview_dataset(file_path=default_dataset_path())
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
             detail="Legislation dataset file was not found.",
-        )
+        ) from None
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except Exception as exc:
-        print(
-            "Legislation preview failed: "
-            f"{type(exc).__name__}"
-        )
+        print(f"Legislation preview failed: {type(exc).__name__}")
         raise HTTPException(
             status_code=500,
             detail="Legislation preview failed. Check backend logs.",
         ) from None
+
+
+# ---------------------------------------------------------------------
+# Protected legislation review
+# ---------------------------------------------------------------------
+
+@app.post("/api/legislation/{batch_id}/review")
+def review_legislation_batch(
+    batch_id: UUID,
+    request: LegislationReviewRequest,
+    x_review_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Approve or reject a batch using the separate private review token."""
+    require_review_token(x_review_token)
+
+    client = get_supabase_client()
+
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase is not configured.",
+        )
+
+    batch = get_batch_or_404(client, batch_id)
+
+    if batch.get("status") not in {"staged", "partial"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Only staged or partial batches can be reviewed.",
+        )
+
+    if request.decision == "approve":
+        if batch.get("status") != "staged":
+            raise HTTPException(
+                status_code=409,
+                detail="Partial batches cannot be approved.",
+            )
+
+        check_batch_completeness(client, batch_id, batch)
+        new_status = "reviewed"
+    else:
+        new_status = "rejected"
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    update_payload = {
+        "status": new_status,
+        "reviewed_at": now,
+        "reviewed_by": request.reviewed_by.strip(),
+        "review_notes": request.review_notes.strip(),
+    }
+
+    try:
+        result = (
+            client.table("law_import_batches")
+            .update(update_payload)
+            .eq("id", str(batch_id))
+            .eq("status", batch["status"])
+            .execute()
+        )
+    except Exception as exc:
+        print(f"Batch review update failed: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save the review decision.",
+        ) from None
+
+    if not result.data:
+        raise HTTPException(
+            status_code=409,
+            detail="Batch status changed; reload it before reviewing.",
+        )
+
+    return {
+        "status": new_status,
+        "import_batch_id": str(batch_id),
+        "reviewed_at": now,
+        "publishing_performed": False,
+        "message": (
+            "Batch reviewed. Publication requires a separate request."
+            if new_status == "reviewed"
+            else "Batch rejected and not published."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------
+# Protected legislation publication
+# ---------------------------------------------------------------------
+
+@app.post("/api/legislation/{batch_id}/publish")
+def publish_legislation_batch(
+    batch_id: UUID,
+    x_review_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Publish a reviewed batch through the guarded database function."""
+    require_review_token(x_review_token)
+
+    client = get_supabase_client()
+
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase is not configured.",
+        )
+
+    batch = get_batch_or_404(client, batch_id)
+
+    if batch.get("status") != "reviewed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only reviewed batches can be published.",
+        )
+
+    check_batch_completeness(client, batch_id, batch)
+
+    try:
+        result = client.rpc(
+            "publish_law_import_batch",
+            {"p_batch_id": str(batch_id)},
+        ).execute()
+    except Exception as exc:
+        print(f"Batch publication failed: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Publication was refused or failed. "
+                "Check the batch state and backend logs."
+            ),
+        ) from None
+
+    return {
+        "result": result.data,
+        "import_batch_id": str(batch_id),
+    }
