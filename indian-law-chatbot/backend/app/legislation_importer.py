@@ -236,17 +236,26 @@ def import_dataset(
             errors.append("provisions must be a JSON array.")
             provisions = []
 
+        
         for provision_index, provision in enumerate(provisions):
             if not isinstance(provision, dict):
                 errors.append(
                     f"Provision {provision_index} must be an object."
                 )
+                report["provisions_invalid"] += 1
                 continue
+        
+            provision_errors = validate_provision(provision)
+        
+            if provision_errors:
+                report["provisions_invalid"] += 1
+                errors.extend(
+                    f"Provision {provision_index}: {error}"
+                    for error in provision_errors
+                )
+            else:
+                report["provisions_validated"] += 1
 
-            errors.extend(
-                f"Provision {provision_index}: {error}"
-                for error in validate_provision(provision)
-            )
 
         if errors:
             report["errors"].append({
