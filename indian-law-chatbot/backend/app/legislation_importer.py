@@ -2,15 +2,14 @@
 """
 NyayaAI legislation importer.
 
-New legislation records are inserted as staged and are not published
-automatically. Existing Acts and provisions are never overwritten.
+New legislation records are staged and never published automatically.
+Existing Acts and provisions are never overwritten.
 
-Structural validation does not prove that legislation is authentic,
-legally accurate, complete, or current.
+Structural validation does not establish legal authenticity, accuracy,
+completeness, or currentness.
 
-Important: Supabase REST operations are not wrapped in one atomic
-transaction. A failed import may leave staged records in the database.
-Review the batch report before taking any further action.
+Supabase REST operations are not atomic. Failed imports may leave
+staged records that require review.
 """
 
 import json
@@ -61,6 +60,7 @@ def validate_act(record: dict[str, Any]) -> list[str]:
         errors.append("source_url must use HTTPS")
 
     provisions = record.get("provisions", [])
+
     if not isinstance(provisions, list):
         errors.append("provisions must be a JSON array.")
     else:
@@ -118,16 +118,47 @@ def load_dataset(file_path: str) -> list[dict[str, Any]]:
     return data
 
 
+def _register_batch(client: Any, batch_id: str) -> None:
+    """Register a batch before importing any legislation records."""
+    result = (
+        client.table("law_import_batches")
+        .insert({
+            "id": batch_id,
+            "status": "staged",
+        })
+        .execute()
+    )
+
+    if not result.data:
+        raise RuntimeError("Could not register the import batch.")
+
+
+def _finish_batch(
+    client: Any,
+    batch_id: str,
+    status: str,
+) -> None:
+    """Update the batch status without publishing its records."""
+    if status not in {"staged", "partial"}:
+        raise ValueError("Invalid import completion status.")
+
+    result = (
+        client.table("law_import_batches")
+        .update({"status": status})
+        .eq("id", batch_id)
+        .execute()
+    )
+
+    if not result.data:
+        raise RuntimeError("Could not update the import batch status.")
+
+
 def _upsert_act(
     client: Any,
     act: dict[str, Any],
     batch_id: str,
 ) -> dict[str, Any]:
-    """
-    Insert a new staged Act or return an existing Act unchanged.
-
-    The source URL is the existing-record lookup key.
-    """
+    """Insert a staged Act or return an existing Act unchanged."""
     source_url = act["source_url"].strip()
 
     existing = (
@@ -170,9 +201,7 @@ def _upsert_act(
     result = client.table("law_acts").insert(payload).execute()
 
     if not result.data:
-        raise RuntimeError(
-            f"Could not insert Act: {payload['act_title']}"
-        )
+        raise RuntimeError("Could not insert the Act.")
 
     return {
         **result.data[0],
@@ -188,11 +217,7 @@ def _upsert_provision(
     default_language: str,
     batch_id: str,
 ) -> bool:
-    """
-    Insert a staged provision if its label does not already exist.
-
-    Returns True when inserted, False when already present.
-    """
+    """Insert a staged provision if its label does not already exist."""
     label = str(provision["provision_label"]).strip()
 
     existing = (
@@ -228,7 +253,7 @@ def _upsert_provision(
     result = client.table("law_provisions").insert(payload).execute()
 
     if not result.data:
-        raise RuntimeError(f"Could not insert provision: {label}")
+        raise RuntimeError("Could not insert a provision.")
 
     return True
 
@@ -238,14 +263,10 @@ def import_dataset(
     dry_run: bool = True,
 ) -> dict[str, Any]:
     """
-    Validate and optionally import a JSON dataset.
+    Validate and optionally import a dataset.
 
-    dry_run=True performs validation without database writes.
-    Actual imports receive a unique batch ID. Newly inserted records
-    remain staged and unverified; this function never publishes them.
-
-    This process is not atomic. A failure can leave staged records
-    from the batch in the database.
+    Real imports are registered in law_import_batches before data writes.
+    New records remain staged. This function never publishes legislation.
     """
     records = load_dataset(file_path)
 
@@ -267,9 +288,9 @@ def import_dataset(
         "publishing_performed": False,
     }
 
-    valid_records: list[dict[str, Any]] = []
+    valid_records = []
 
-    # Validate all records before making any database writes.
+    # Validate the entire dataset before database writes.
     for index, act in enumerate(records):
         errors = validate_act(act)
         provisions = act.get("provisions", [])
@@ -324,6 +345,9 @@ def import_dataset(
 
     batch_id = str(uuid4())
     report["import_batch_id"] = batch_id
+
+    # Register the batch before inserting any Act or provision.
+    _register_batch(client, batch_id)
     report["status"] = "import_in_progress"
 
     for act in valid_records:
@@ -333,6 +357,7 @@ def import_dataset(
                 act=act,
                 batch_id=batch_id,
             )
+
             act_id = saved_act["id"]
             provisions = act.get("provisions", [])
 
@@ -357,11 +382,23 @@ def import_dataset(
                     report["provisions_skipped"] += 1
 
         except Exception as exc:
-            # Avoid exposing database error messages or credentials.
+            # Do not return database messages or credentials to clients.
             report["import_errors"].append({
                 "act_title": act.get("act_title", "Unknown"),
                 "error_type": type(exc).__name__,
             })
+
+    final_status = (
+        "partial" if report["import_errors"] else "staged"
+    )
+
+    try:
+        _finish_batch(client, batch_id, final_status)
+    except Exception as exc:
+        report["import_errors"].append({
+            "operation": "batch_status_update",
+            "error_type": type(exc).__name__,
+        })
 
     if report["import_errors"]:
         report["status"] = "import_partial_or_failed"
@@ -447,6 +484,7 @@ def preview_dataset(file_path: str) -> dict[str, Any]:
             if str(provision["provision_label"]).strip()
             not in existing_labels
         )
+
         existing_count = len(provisions) - new_count
 
         totals["provisions_new"] += new_count
@@ -468,8 +506,7 @@ def preview_dataset(file_path: str) -> dict[str, Any]:
         "acts": results,
         "note": (
             "Read-only preview only. Database contents can change "
-            "before a later import. This preview does not guarantee "
-            "that the import will be atomic or error-free."
+            "before a later import. Import operations are not atomic."
         ),
     }
 
