@@ -93,8 +93,25 @@ def load_dataset(file_path: str) -> list[dict[str, Any]]:
     return data
 
 
+
 def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
-    """Insert or update one Act using its source identity."""
+    """Insert a new Act, or return the existing Act without modifying it."""
+    source_url = act["source_url"].strip()
+
+    existing = (
+        client.table("law_acts")
+        .select("id, act_title, status")
+        .eq("source_url", source_url)
+        .limit(1)
+        .execute()
+    )
+
+    if existing.data:
+        return {
+            **existing.data[0],
+            "_already_exists": True,
+        }
+
     now = datetime.now(timezone.utc).isoformat()
 
     payload = {
@@ -106,15 +123,29 @@ def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
         "state_or_ut": act.get("state_or_ut"),
         "instrument_type": act["instrument_type"],
         "language": act.get("language", "English"),
-        "status": act.get("status", "unknown"),
-        "source_url": act["source_url"].strip(),
+        "status": "unverified",
+        "source_url": source_url,
         "source_name": act["source_name"].strip(),
         "published_on": act.get("published_on"),
         "effective_from": act.get("effective_from"),
         "effective_to": act.get("effective_to"),
-        "last_verified_at": now,
         "updated_at": now,
+        "created_at": now,
     }
+
+    # Do not set last_verified_at during import.
+    result = client.table("law_acts").insert(payload).execute()
+
+    if not result.data:
+        raise RuntimeError(
+            f"Could not insert Act: {payload['act_title']}"
+        )
+
+    return {
+        **result.data[0],
+        "_already_exists": False,
+    }
+
 
     # Use the official source URL as a lookup key to avoid inserting
     # the same Act again when it has already been imported.
