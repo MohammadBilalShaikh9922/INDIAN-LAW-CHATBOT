@@ -679,28 +679,26 @@ def laws() -> dict[str, Any]:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
-    query = request.message.strip()
-
-    # Normalize common quotation marks that may surround user input.
-    clean_query = query.strip("\"'“”‘’").strip()
-    query_lower = clean_query.lower()
-
+    query = request.message.strip().strip("\"'“”‘’").strip()
+    query_lower = query.lower()
     history = request.history[-10:]
 
     previous_user_questions = [
-        item.content.strip().strip("\"'“”‘’")
+        item.content.strip().strip("\"'“”‘’").strip()
         for item in history
         if item.role == "user" and item.content.strip()
     ]
 
-    previous_question = (
-        previous_user_questions[-1]
-        if previous_user_questions
-        else ""
-    )
+    # The frontend may include the current question in history.
+    # Do not accidentally treat it as the previous question.
+    previous_question = ""
+    for question in reversed(previous_user_questions):
+        if question.lower() != query_lower:
+            previous_question = question
+            break
+
     previous_lower = previous_question.lower()
 
-    # Detect follow-ups without treating every short question as one.
     follow_up_starters = (
         "what about",
         "what is the punishment",
@@ -718,15 +716,14 @@ def chat(request: ChatRequest) -> ChatResponse:
     )
 
     is_short_follow_up = (
-        len(clean_query.split()) <= 12
-        and any(
-            query_lower.startswith(starter)
-            for starter in follow_up_starters
-        )
+        len(query.split()) <= 12
+        and any(query_lower.startswith(s) for s in follow_up_starters)
     )
 
+    privacy_question = "privacy" in query_lower
+
     privacy_follow_up = (
-        "privacy" in query_lower
+        privacy_question
         and (
             "article 21" in previous_lower
             or "right to life" in previous_lower
@@ -734,26 +731,74 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
     )
 
-    # A specific Article number must not be replaced by a guessed Article.
-    # For a privacy follow-up to an Article 21 question, retrieve Article 21
-    # as the constitutional provision, then clearly disclose the limitation
-    # that this database does not contain the relevant case-law analysis.
-    if privacy_follow_up:
+    theft_question = any(
+        term in query_lower
+        for term in (
+            "theft",
+            "stealing",
+            "stolen property",
+            "punishment for stealing",
+        )
+    )
+
+    # Never substitute a random constitutional Article for a question
+    # about privacy or criminal punishment.
+    if privacy_question:
         matches = retrieve("Article 21")
+    elif theft_question:
+        matches = []
     else:
-        search_query = clean_query
+        search_query = query
 
         if is_short_follow_up and previous_question:
-            search_query = f"{previous_question} {clean_query}"
+            search_query = f"{previous_question} {query}"
 
         matches = retrieve(search_query)
 
-        # If the combined query is not useful, retry the actual question.
-        if not matches and search_query != clean_query:
-            matches = retrieve(clean_query)
+        # Retry the user's actual question if contextual retrieval fails.
+        if not matches and search_query != query:
+            matches = retrieve(query)
+
+    # Privacy requires case-law context that may not exist in this dataset.
+    if privacy_question and not matches:
+        answer = (
+            "Article 21 of the Constitution of India is relevant to the "
+            "constitutional discussion of life and personal liberty. "
+            "However, the available local dataset does not provide enough "
+            "verified case-law material to explain the right to privacy "
+            "in detail. Consult the relevant Supreme Court judgment and "
+            "an authoritative legal source."
+        )
+
+        return ChatResponse(
+            answer=answer,
+            sources=[],
+            confidence="low",
+            disclaimer=DISCLAIMER,
+        )
+
+    # Do not invent a criminal-law answer when the relevant provision
+    # has not been retrieved from the available legal dataset.
+    if theft_question:
+        answer = (
+            "I could not retrieve a sufficiently relevant, verified "
+            "criminal-law provision for this theft question from the "
+            "currently available dataset. I will not substitute an "
+            "unrelated constitutional Article. The applicable provision "
+            "depends on the facts and the law in force. Please check the "
+            "official text of the applicable criminal law or consult "
+            "a qualified advocate."
+        )
+
+        return ChatResponse(
+            answer=answer,
+            sources=[],
+            confidence="low",
+            disclaimer=DISCLAIMER,
+        )
 
     if not matches:
-        if requested_article(clean_query):
+        if requested_article(query):
             answer = (
                 "I could not reliably locate that exact Article in the "
                 "available local and published text. No unrelated Article "
@@ -762,10 +807,11 @@ def chat(request: ChatRequest) -> ChatResponse:
             )
         else:
             answer = (
-                "I could not find a sufficiently relevant provision in the "
-                "available knowledge base. That does not mean the law or "
-                "right does not exist. Try naming the Act, Article, section, "
-                "or topic and verify the result against an authoritative source."
+                "I could not find a sufficiently relevant provision in "
+                "the available knowledge base. This does not mean the law "
+                "or right does not exist. Try naming the Act, Article, "
+                "section, or topic, and verify the result against an "
+                "authoritative source."
             )
 
         return ChatResponse(
@@ -776,27 +822,55 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
 
     top_score, top = matches[0]
+
+    # Require a minimum retrieval score for ordinary questions.
+    # Explicit Article lookups use the exact-match score from retrieve().
+    if top_score < 1.0 and not requested_article(query):
+        return ChatResponse(
+            answer=(
+                "The available results do not match your question closely "
+                "enough for a reliable answer. Please provide a more "
+                "specific legal topic or the name of the relevant Act."
+            ),
+            sources=[],
+            confidence="low",
+            disclaimer=DISCLAIMER,
+        )
+
     sources = []
+    seen_urls = set()
 
     for _, item in matches:
         source_url = str(
             item.get("source_url", PDF_SOURCE_URL)
         ).strip()
 
-        # Avoid returning empty or invalid source links.
-        if not source_url.startswith(("https://", "http://")):
+        if (
+            not source_url.startswith(("https://", "http://"))
+            or source_url in seen_urls
+        ):
             continue
 
-        sources.append(Source(
-            title=str(
-                item.get("source_title", item.get("title", "Legal source"))
-            ),
-            url=source_url,
-            act=item.get("act"),
-            provision=item.get("provision"),
-        ))
+        seen_urls.add(source_url)
 
-    if top.get("act") == "Constitution of India" and top.get("provision"):
+        sources.append(
+            Source(
+                title=str(
+                    item.get(
+                        "source_title",
+                        item.get("title", "Legal source"),
+                    )
+                ),
+                url=source_url,
+                act=item.get("act"),
+                provision=item.get("provision"),
+            )
+        )
+
+    if (
+        top.get("act") == "Constitution of India"
+        and top.get("provision")
+    ):
         answer = (
             f"**{top['title']}**\n\n"
             f"{top['summary']}\n\n"
@@ -805,21 +879,23 @@ def chat(request: ChatRequest) -> ChatResponse:
             "currency. Compare it with the official published Constitution."
         )
 
-        if privacy_follow_up:
+        if privacy_question:
             answer += (
                 "\n\n**About the right to privacy:** Article 21 is relevant "
                 "to the constitutional discussion of life and personal "
-                "liberty. This chatbot's current local Constitution text "
-                "does not itself explain the Supreme Court's case-law "
-                "interpretation of privacy. Please consult the relevant "
-                "Supreme Court judgment and an authoritative legal source "
-                "before relying on a detailed interpretation."
+                "liberty. The available Constitution text does not itself "
+                "provide the Supreme Court's full case-law interpretation "
+                "of privacy. Consult the relevant judgment and an "
+                "authoritative legal source before relying on a detailed "
+                "interpretation."
             )
     else:
         answer = (
-            f"**{top['title']}**\n\n{top['summary']}\n\n"
-            "This is a short starter summary, not a full statement of the law. "
-            "Check the linked source for authoritative text and current status."
+            f"**{top['title']}**\n\n"
+            f"{top['summary']}\n\n"
+            "This is a short starter summary, not a complete statement "
+            "of the law. Check the linked source for authoritative text "
+            "and current status."
         )
 
     confidence = "moderate" if top_score >= 2.0 else "low"
