@@ -207,14 +207,24 @@ def import_dataset(
     """
     records = load_dataset(file_path)
 
+    
     report: dict[str, Any] = {
         "status": "validated",
         "dry_run": dry_run,
         "acts_seen": len(records),
+        "acts_validated": 0,
+        "provisions_seen": sum(
+            len(act.get("provisions", []))
+            for act in records
+            if isinstance(act.get("provisions", []), list)
+        ),
+        "provisions_validated": 0,
+        "provisions_invalid": 0,
         "acts_imported": 0,
         "provisions_imported": 0,
         "errors": [],
     }
+
 
     valid_records = []
 
