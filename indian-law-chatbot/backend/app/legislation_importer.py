@@ -325,6 +325,108 @@ def import_dataset(
 
     return report
 
+def preview_dataset(file_path: str) -> dict[str, Any]:
+    """
+    Preview an import without writing anything to Supabase.
+    """
+    validation = import_dataset(file_path=file_path, dry_run=True)
+
+    if validation["status"] != "validated":
+        return {
+            "status": "validation_failed",
+            "writes_performed": False,
+            "validation": validation,
+        }
+
+    client = get_supabase_client()
+    if client is None:
+        raise RuntimeError(
+            "Supabase is not configured. "
+            "Check Render environment variables."
+        )
+
+    records = load_dataset(file_path)
+    results = []
+
+    totals = {
+        "acts_new": 0,
+        "acts_existing": 0,
+        "provisions_new": 0,
+        "provisions_existing": 0,
+    }
+
+    for act in records:
+        source_url = act["source_url"].strip()
+
+        existing = (
+            client.table("law_acts")
+            .select("id, act_title")
+            .eq("source_url", source_url)
+            .limit(1)
+            .execute()
+        )
+
+        if not existing.data:
+            totals["acts_new"] += 1
+            totals["provisions_new"] += len(act.get("provisions", []))
+
+            results.append({
+                "act_title": act["act_title"],
+                "act_exists": False,
+                "provisions_in_dataset": len(act.get("provisions", [])),
+                "provisions_new": len(act.get("provisions", [])),
+                "provisions_existing": 0,
+            })
+            continue
+
+        totals["acts_existing"] += 1
+        act_id = existing.data[0]["id"]
+
+        existing_provisions = (
+            client.table("law_provisions")
+            .select("provision_label")
+            .eq("act_id", act_id)
+            .execute()
+        )
+
+        existing_labels = {
+            str(row["provision_label"]).strip()
+            for row in (existing_provisions.data or [])
+        }
+
+        provisions = act.get("provisions", [])
+        new_count = sum(
+            1
+            for provision in provisions
+            if str(provision["provision_label"]).strip()
+            not in existing_labels
+        )
+        existing_count = len(provisions) - new_count
+
+        totals["provisions_new"] += new_count
+        totals["provisions_existing"] += existing_count
+
+        results.append({
+            "act_title": act["act_title"],
+            "act_exists": True,
+            "provisions_in_dataset": len(provisions),
+            "provisions_new": new_count,
+            "provisions_existing": existing_count,
+        })
+
+    return {
+        "status": "preview_completed",
+        "writes_performed": False,
+        "validation": "passed",
+        "totals": totals,
+        "acts": results,
+        "note": (
+            "Read-only preview only. Database contents can change "
+            "before a later import. This preview does not guarantee "
+            "that the import will be atomic or error-free."
+        ),
+    }
+
 
 def default_dataset_path() -> str:
     """Return the conventional legislation dataset path."""
