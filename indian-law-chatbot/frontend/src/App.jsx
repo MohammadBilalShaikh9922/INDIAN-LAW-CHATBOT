@@ -14,7 +14,7 @@ const suggestions = [
 
 const welcome = {
   role: 'assistant',
-  text: 'Namaste! I’m NyayaAI, an educational Indian-law information assistant. Ask a question in everyday language, or choose a suggested topic below.',
+  text: 'Namaste! I’m KANOON AI, an educational Indian-law information assistant. Ask a question in everyday language, or choose a suggested topic below.',
   sources: [],
   disclaimer: 'General information only — not legal advice.'
 };
@@ -136,7 +136,7 @@ function formatText(text) {
         <div className="brand">
           <div className="brand-mark">§</div>
           <div>
-            <strong>NyayaAI</strong>
+            <strong>KANOON AI</strong>
             <span>INDIAN LAW ASSISTANT</span>
           </div>
         </div>
@@ -202,7 +202,7 @@ function formatText(text) {
                   {msg.role === 'assistant' && <div className="avatar">§</div>}
                   <div className="message-body">
                     <div className="message-label">
-                      {msg.role === 'assistant' ? 'NYAYAAI' : 'YOU'}
+                      {msg.role === 'assistant' ? 'KANOON AI' : 'YOU'}
                     </div>
                     <div className={`bubble ${msg.role}`}>
                       {formatText(msg.text ?? '')}
@@ -247,7 +247,7 @@ function formatText(text) {
                 <div className="message-row assistant">
                   <div className="avatar">§</div>
                   <div className="message-body">
-                    <div className="message-label">NYAYAAI</div>
+                    <div className="message-label">KANOON AI</div>
                     <div className="bubble loading-bubble">
                       Searching legal references…
                     </div>
@@ -306,7 +306,7 @@ function formatText(text) {
 
           <div className="bottom-notice">
             <p>
-              <b>Important legal notice</b> NyayaAI provides general educational
+              <b>Important legal notice</b> KANOON AI provides general educational
               information, not legal advice. Laws change and the right answer
               depends on your facts. Verify every source and consult a qualified
               advocate before taking legal action.
@@ -314,7 +314,7 @@ function formatText(text) {
           </div>
 
           <footer>
-            <span>NyayaAI · AI Powered Indian Law Chatbot</span>
+            <span>KANOON AI · AI Powered Indian Law Chatbot</span>
             <div>
               <a href="https://www.indiacode.nic.in/" target="_blank" rel="noreferrer">India Code</a>
               <a href="https://legislative.gov.in/" target="_blank" rel="noreferrer">Legislative Department</a>
