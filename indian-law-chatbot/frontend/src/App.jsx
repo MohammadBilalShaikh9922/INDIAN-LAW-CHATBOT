@@ -176,10 +176,10 @@ export default function App() {
                       {msg.role === 'assistant' ? 'NYAYAAI' : 'YOU'}
                     </div>
                     <div className={`bubble ${msg.role}`}>
-                      {formatText(msg.text)}
+                      {formatText(msg.text ?? '')}
                     </div>
 
-                    {msg.sources.length > 0 && (
+                    {Array.isArray(msg.sources) && msg.sources.length > 0 && (
                       <div className="sources">
                         <div className="sources-title">References to verify</div>
                         {msg.sources.map((source, sourceIndex) => (
