@@ -182,29 +182,16 @@ def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
     return result.data[0]
 
 
+
 def _upsert_provision(
     client: Any,
     act_id: Any,
     provision: dict[str, Any],
     default_source_url: str,
     default_language: str,
-) -> None:
-    """Insert or update a provision by Act ID and provision label."""
-    now = datetime.now(timezone.utc).isoformat()
+) -> bool:
+    """Insert a provision only if its label does not already exist."""
     label = str(provision["provision_label"]).strip()
-
-    payload = {
-        "act_id": act_id,
-        "provision_label": label,
-        "heading": provision.get("heading"),
-        "provision_text": provision["provision_text"].strip(),
-        "source_url": (
-            provision.get("source_url") or default_source_url
-        ),
-        "page_number": provision.get("page_number"),
-        "language": provision.get("language", default_language),
-        "updated_at": now,
-    }
 
     existing = (
         client.table("law_provisions")
@@ -216,15 +203,32 @@ def _upsert_provision(
     )
 
     if existing.data:
-        (
-            client.table("law_provisions")
-            .update(payload)
-            .eq("id", existing.data[0]["id"])
-            .execute()
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    payload = {
+        "act_id": act_id,
+        "provision_label": label,
+        "heading": provision.get("heading"),
+        "provision_text": provision["provision_text"].strip(),
+        "source_url": (
+            provision.get("source_url") or default_source_url
+        ),
+        "page_number": provision.get("page_number"),
+        "language": provision.get("language", default_language),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    result = client.table("law_provisions").insert(payload).execute()
+
+    if not result.data:
+        raise RuntimeError(
+            f"Could not insert provision: {label}"
         )
-    else:
-        payload["created_at"] = now
-        client.table("law_provisions").insert(payload).execute()
+
+    return True
 
 
 def import_dataset(
@@ -312,22 +316,47 @@ def import_dataset(
             "Supabase is not configured. Check Render environment variables."
         )
 
+        
     for act in valid_records:
-        saved_act = _upsert_act(client, act)
-        report["acts_imported"] += 1
-
-        for provision in act.get("provisions", []):
-            _upsert_provision(
-                client=client,
-                act_id=saved_act["id"],
-                provision=provision,
-                default_source_url=act["source_url"],
-                default_language=act.get("language", "English"),
-            )
-            report["provisions_imported"] += 1
-
-    report["status"] = "import_completed"
+        try:
+            saved_act = _upsert_act(client, act)
+    
+            if saved_act.get("_already_exists"):
+                report["acts_skipped"] += 1
+                report["provisions_skipped"] += len(
+                    act.get("provisions", [])
+                )
+                continue
+    
+            report["acts_imported"] += 1
+    
+            for provision in act.get("provisions", []):
+                inserted = _upsert_provision(
+                    client=client,
+                    act_id=saved_act["id"],
+                    provision=provision,
+                    default_source_url=act["source_url"],
+                    default_language=act.get("language", "English"),
+                )
+    
+                if inserted:
+                    report["provisions_imported"] += 1
+                else:
+                    report["provisions_skipped"] += 1
+    
+        except Exception as exc:
+            report["import_errors"].append({
+                "act_title": act.get("act_title", "Unknown"),
+                "error_type": type(exc).__name__,
+            })
+    
+    if report["import_errors"]:
+        report["status"] = "import_partial_or_failed"
+    else:
+        report["status"] = "import_completed"
+    
     return report
+
 
 
 def default_dataset_path() -> str:
