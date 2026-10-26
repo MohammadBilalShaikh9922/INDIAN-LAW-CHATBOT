@@ -126,6 +126,8 @@ def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
         "instrument_type": act["instrument_type"],
         "language": act.get("language", "English"),
         "status": "unverified",
+        "import_status": "staged",
+        "import_batch_id": None,
         "source_url": source_url,
         "source_name": act["source_name"].strip(),
         "published_on": act.get("published_on"),
@@ -179,6 +181,8 @@ def _upsert_provision(
 
     payload = {
         "act_id": act_id,
+        "import_status": "staged",
+        "import_batch_id": None,
         "provision_label": label,
         "heading": provision.get("heading"),
         "provision_text": provision["provision_text"].strip(),
