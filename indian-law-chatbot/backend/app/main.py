@@ -193,7 +193,6 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = Field(default_factory=list, max_length=10)
 
 
-
 class Source(BaseModel):
     title: str
     url: str
@@ -674,61 +673,87 @@ def laws() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------
+# Chat endpoint with basic conversation context
+# ---------------------------------------------------------------------
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     query = request.message.strip()
 
-    # Use recent conversation only to clarify short follow-up questions.
+    # Normalize common quotation marks that may surround user input.
+    clean_query = query.strip("\"'“”‘’").strip()
+    query_lower = clean_query.lower()
+
     history = request.history[-10:]
+
     previous_user_questions = [
-        item.content.strip()
+        item.content.strip().strip("\"'“”‘’")
         for item in history
         if item.role == "user" and item.content.strip()
     ]
 
+    previous_question = (
+        previous_user_questions[-1]
+        if previous_user_questions
+        else ""
+    )
+    previous_lower = previous_question.lower()
+
+    # Detect follow-ups without treating every short question as one.
     follow_up_starters = (
-        "what about", "what is the punishment", "what is its punishment",
-        "what are the penalties", "explain that", "tell me more",
-        "what does this mean", "and what about", "what happens if",
-        "is it legal", "can i", "does this also", "what is the process"
+        "what about",
+        "what is the punishment",
+        "what is its punishment",
+        "what are the penalties",
+        "explain that",
+        "tell me more",
+        "what does this mean",
+        "and what about",
+        "what happens if",
+        "is it legal",
+        "can i",
+        "does this also",
+        "what is the process",
     )
 
-    standalone_query = query.lower()
     is_short_follow_up = (
-        len(query.split()) <= 12
-        and any(standalone_query.startswith(s) for s in follow_up_starters)
+        len(clean_query.split()) <= 12
+        and any(
+            query_lower.startswith(starter)
+            for starter in follow_up_starters
+        )
     )
 
-    # If the question is clearly a follow-up, add the latest user question
-    # as context. The legal database still determines the answer and sources.
-    
-search_query = query
+    privacy_follow_up = (
+        "privacy" in query_lower
+        and (
+            "article 21" in previous_lower
+            or "right to life" in previous_lower
+            or "personal liberty" in previous_lower
+        )
+    )
 
-if is_short_follow_up and previous_user_questions:
-    previous_question = previous_user_questions[-1].lower()
-
-    # Preserve the topic from the previous question for follow-ups.
-    if "article 21" in previous_question or "right to life" in previous_question:
-        search_query = f"Article 21 right to life personal liberty privacy {query}"
+    # A specific Article number must not be replaced by a guessed Article.
+    # For a privacy follow-up to an Article 21 question, retrieve Article 21
+    # as the constitutional provision, then clearly disclose the limitation
+    # that this database does not contain the relevant case-law analysis.
+    if privacy_follow_up:
+        matches = retrieve("Article 21")
     else:
-        search_query = f"{previous_user_questions[-1]} {query}"
+        search_query = clean_query
 
-matches = retrieve(search_query)
+        if is_short_follow_up and previous_question:
+            search_query = f"{previous_question} {clean_query}"
 
-if not matches or matches[0][1].get("act") == "Constitution of India" and (
-    "right to privacy" in query.lower()
-    or "privacy" in query.lower()
-):
-    # Try a focused search rather than relying only on combined context.
-    focused_matches = retrieve("Article 21 right to privacy personal liberty")
-    if focused_matches:
-        matches = focused_matches
+        matches = retrieve(search_query)
 
-
+        # If the combined query is not useful, retry the actual question.
+        if not matches and search_query != clean_query:
+            matches = retrieve(clean_query)
 
     if not matches:
-        if requested_article(query):
+        if requested_article(clean_query):
             answer = (
                 "I could not reliably locate that exact Article in the "
                 "available local and published text. No unrelated Article "
@@ -754,11 +779,19 @@ if not matches or matches[0][1].get("act") == "Constitution of India" and (
     sources = []
 
     for _, item in matches:
+        source_url = str(
+            item.get("source_url", PDF_SOURCE_URL)
+        ).strip()
+
+        # Avoid returning empty or invalid source links.
+        if not source_url.startswith(("https://", "http://")):
+            continue
+
         sources.append(Source(
             title=str(
                 item.get("source_title", item.get("title", "Legal source"))
             ),
-            url=str(item.get("source_url", PDF_SOURCE_URL)),
+            url=source_url,
             act=item.get("act"),
             provision=item.get("provision"),
         ))
@@ -771,6 +804,17 @@ if not matches or matches[0][1].get("act") == "Constitution of India" and (
             "been independently checked for extraction errors or edition "
             "currency. Compare it with the official published Constitution."
         )
+
+        if privacy_follow_up:
+            answer += (
+                "\n\n**About the right to privacy:** Article 21 is relevant "
+                "to the constitutional discussion of life and personal "
+                "liberty. This chatbot's current local Constitution text "
+                "does not itself explain the Supreme Court's case-law "
+                "interpretation of privacy. Please consult the relevant "
+                "Supreme Court judgment and an authoritative legal source "
+                "before relying on a detailed interpretation."
+            )
     else:
         answer = (
             f"**{top['title']}**\n\n{top['summary']}\n\n"
