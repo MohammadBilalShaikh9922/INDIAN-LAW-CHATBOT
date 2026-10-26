@@ -92,14 +92,35 @@ export default function App() {
     setError('');
   }
 
-  function formatText(text) {
-    return String(text ?? '').split('\n').map((line, index) => (
+  
+function formatText(text) {
+  const lines = String(text ?? '')
+    // Convert escaped newlines and remove unwanted escape characters.
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\\*/g, '*')
+    .replace(/\\\*/g, '*')
+    .split('\n');
+
+  return lines.map((line, index) => {
+    const cleanedLine = line.trim();
+
+    // Display Markdown-style headings as bold text.
+    const headingMatch = cleanedLine.match(/^\*\*(.*?)\*\*$/);
+
+    return (
       <span key={index}>
-        {line}
-        {index < String(text ?? '').split('\n').length - 1 && <br />}
+        {headingMatch ? (
+          <strong>{headingMatch[1]}</strong>
+        ) : (
+          cleanedLine.replace(/\*\*/g, '')
+        )}
+        {index < lines.length - 1 && <br />}
       </span>
-    ));
-  }
+    );
+  });
+}
+
 
   return (
     <div className="app-shell">
