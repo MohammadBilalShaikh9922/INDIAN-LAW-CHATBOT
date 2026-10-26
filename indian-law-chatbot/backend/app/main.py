@@ -724,11 +724,6 @@ if not matches or matches[0][1].get("act") == "Constitution of India" and (
     focused_matches = retrieve("Article 21 right to privacy personal liberty")
     if focused_matches:
         matches = focused_matches
-```
-
-This is a targeted retrieval improvement, **not a guarantee** that the returned provision is correct. The result still needs to be checked against the official constitutional text and relevant judgments.
-
-After you commit the change, test the same two questions again. If Article 11 still appears, we'll inspect the `retrieve()` function next, because the underlying ranking or extracted source text will need attention.
 
 
 
