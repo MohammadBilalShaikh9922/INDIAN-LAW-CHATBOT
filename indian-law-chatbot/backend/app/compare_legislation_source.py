@@ -24,23 +24,59 @@ def normalize_text(value):
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
+
 def download_official_pdf():
-    request = urllib.request.Request(
-        OFFICIAL_PDF_URL,
-        headers={"User-Agent": "NyayaAI-Legislation-Audit/1.0"},
+    import time
+    import urllib.error
+
+    last_error = None
+
+    for attempt in range(1, 4):
+        try:
+            request = urllib.request.Request(
+                OFFICIAL_PDF_URL,
+                headers={
+                    "User-Agent": "Mozilla/5.0 NyayaAI-Legislation-Audit/1.0",
+                    "Accept": "application/pdf,*/*",
+                    "Connection": "close",
+                },
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=120,
+            ) as response:
+                content_type = response.headers.get(
+                    "Content-Type", ""
+                )
+                pdf_bytes = response.read()
+
+            if not pdf_bytes.startswith(b"%PDF"):
+                raise ValueError(
+                    "The source URL did not return PDF content. "
+                    f"Content-Type: {content_type}"
+                )
+
+            print(
+                f"Official PDF downloaded successfully "
+                f"on attempt {attempt}."
+            )
+            return pdf_bytes
+
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            print(
+                f"PDF download attempt {attempt}/3 failed: {exc}"
+            )
+
+            if attempt < 3:
+                time.sleep(5 * attempt)
+
+    raise RuntimeError(
+        "Could not download the official PDF after 3 attempts. "
+        "The comparison was not completed. "
+        f"Last error: {last_error}"
     )
-
-    with urllib.request.urlopen(request, timeout=60) as response:
-        content_type = response.headers.get("Content-Type", "")
-        pdf_bytes = response.read()
-
-    if not pdf_bytes.startswith(b"%PDF"):
-        raise ValueError(
-            f"Downloaded content is not a PDF. "
-            f"Content-Type: {content_type}"
-        )
-
-    return pdf_bytes
 
 
 def main():
