@@ -510,3 +510,33 @@ def import_legislation(
             status_code=500,
             detail="Legislation import failed. Check the backend logs.",
         ) from None
+
+
+
+@app.get("/api/legislation/preview")
+def preview_legislation_import() -> dict[str, Any]:
+    """Preview legislation import without writing to the database."""
+    try:
+        return preview_dataset(file_path=default_dataset_path())
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Legislation dataset file was not found.",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    except Exception as exc:
+        print(
+            "Legislation preview failed: "
+            f"{type(exc).__name__}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Legislation preview failed. Check backend logs.",
+        ) from None
