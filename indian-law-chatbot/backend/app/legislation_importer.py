@@ -2,11 +2,15 @@
 """
 NyayaAI legislation importer.
 
-Imports prepared legislation metadata and provision text into Supabase.
-Imports are insert-only: existing Acts and provisions are never overwritten.
+New legislation records are inserted as staged and are not published
+automatically. Existing Acts and provisions are never overwritten.
 
 Structural validation does not prove that legislation is authentic,
 legally accurate, complete, or current.
+
+Important: Supabase REST operations are not wrapped in one atomic
+transaction. A failed import may leave staged records in the database.
+Review the batch report before taking any further action.
 """
 
 import json
@@ -14,6 +18,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.database import get_supabase_client
 
@@ -58,6 +63,27 @@ def validate_act(record: dict[str, Any]) -> list[str]:
     provisions = record.get("provisions", [])
     if not isinstance(provisions, list):
         errors.append("provisions must be a JSON array.")
+    else:
+        seen_labels = set()
+
+        for index, provision in enumerate(provisions):
+            if not isinstance(provision, dict):
+                errors.append(
+                    f"Provision {index} must be a JSON object."
+                )
+                continue
+
+            label = str(
+                provision.get("provision_label", "")
+            ).strip()
+
+            if label and label in seen_labels:
+                errors.append(
+                    f"Duplicate provision label in Act: {label}"
+                )
+
+            if label:
+                seen_labels.add(label)
 
     return errors
 
@@ -92,17 +118,21 @@ def load_dataset(file_path: str) -> list[dict[str, Any]]:
     return data
 
 
-def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
+def _upsert_act(
+    client: Any,
+    act: dict[str, Any],
+    batch_id: str,
+) -> dict[str, Any]:
     """
-    Insert a new Act or return the existing Act without modifying it.
+    Insert a new staged Act or return an existing Act unchanged.
 
-    The source URL is used as the existing-record lookup key.
+    The source URL is the existing-record lookup key.
     """
     source_url = act["source_url"].strip()
 
     existing = (
         client.table("law_acts")
-        .select("id, act_title, status")
+        .select("id, act_title, status, import_status")
         .eq("source_url", source_url)
         .limit(1)
         .execute()
@@ -127,7 +157,7 @@ def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
         "language": act.get("language", "English"),
         "status": "unverified",
         "import_status": "staged",
-        "import_batch_id": None,
+        "import_batch_id": batch_id,
         "source_url": source_url,
         "source_name": act["source_name"].strip(),
         "published_on": act.get("published_on"),
@@ -137,7 +167,6 @@ def _upsert_act(client: Any, act: dict[str, Any]) -> dict[str, Any]:
         "updated_at": now,
     }
 
-    # Intentionally do not set last_verified_at.
     result = client.table("law_acts").insert(payload).execute()
 
     if not result.data:
@@ -157,9 +186,10 @@ def _upsert_provision(
     provision: dict[str, Any],
     default_source_url: str,
     default_language: str,
+    batch_id: str,
 ) -> bool:
     """
-    Insert a provision if its label does not already exist.
+    Insert a staged provision if its label does not already exist.
 
     Returns True when inserted, False when already present.
     """
@@ -182,7 +212,7 @@ def _upsert_provision(
     payload = {
         "act_id": act_id,
         "import_status": "staged",
-        "import_batch_id": None,
+        "import_batch_id": batch_id,
         "provision_label": label,
         "heading": provision.get("heading"),
         "provision_text": provision["provision_text"].strip(),
@@ -210,14 +240,19 @@ def import_dataset(
     """
     Validate and optionally import a JSON dataset.
 
-    dry_run=True validates the entire dataset without database writes.
-    Existing Acts are not updated. Existing provisions are not overwritten.
+    dry_run=True performs validation without database writes.
+    Actual imports receive a unique batch ID. Newly inserted records
+    remain staged and unverified; this function never publishes them.
+
+    This process is not atomic. A failure can leave staged records
+    from the batch in the database.
     """
     records = load_dataset(file_path)
 
     report: dict[str, Any] = {
         "status": "validated",
         "dry_run": dry_run,
+        "import_batch_id": None,
         "acts_seen": len(records),
         "acts_validated": 0,
         "provisions_seen": 0,
@@ -229,11 +264,12 @@ def import_dataset(
         "provisions_skipped": 0,
         "errors": [],
         "import_errors": [],
+        "publishing_performed": False,
     }
 
     valid_records: list[dict[str, Any]] = []
 
-    # Validate all records before any database writes.
+    # Validate all records before making any database writes.
     for index, act in enumerate(records):
         errors = validate_act(act)
         provisions = act.get("provisions", [])
@@ -286,20 +322,25 @@ def import_dataset(
             "Check Render environment variables."
         )
 
+    batch_id = str(uuid4())
+    report["import_batch_id"] = batch_id
+    report["status"] = "import_in_progress"
+
     for act in valid_records:
         try:
-            saved_act = _upsert_act(client, act)
+            saved_act = _upsert_act(
+                client=client,
+                act=act,
+                batch_id=batch_id,
+            )
             act_id = saved_act["id"]
             provisions = act.get("provisions", [])
 
             if saved_act.get("_already_exists"):
                 report["acts_skipped"] += 1
-
             else:
                 report["acts_imported"] += 1
 
-            # Check each provision even if the Act already exists.
-            # This allows missing provisions to be inserted safely.
             for provision in provisions:
                 inserted = _upsert_provision(
                     client=client,
@@ -307,6 +348,7 @@ def import_dataset(
                     provision=provision,
                     default_source_url=act["source_url"],
                     default_language=act.get("language", "English"),
+                    batch_id=batch_id,
                 )
 
                 if inserted:
@@ -315,8 +357,7 @@ def import_dataset(
                     report["provisions_skipped"] += 1
 
         except Exception as exc:
-            # Do not expose exception messages that could contain
-            # database details or other sensitive information.
+            # Avoid exposing database error messages or credentials.
             report["import_errors"].append({
                 "act_title": act.get("act_title", "Unknown"),
                 "error_type": type(exc).__name__,
@@ -325,14 +366,13 @@ def import_dataset(
     if report["import_errors"]:
         report["status"] = "import_partial_or_failed"
     else:
-        report["status"] = "import_completed"
+        report["status"] = "import_completed_staged"
 
     return report
 
+
 def preview_dataset(file_path: str) -> dict[str, Any]:
-    """
-    Preview an import without writing anything to Supabase.
-    """
+    """Preview an import without writing anything to Supabase."""
     validation = import_dataset(file_path=file_path, dry_run=True)
 
     if validation["status"] != "validated":
@@ -343,6 +383,7 @@ def preview_dataset(file_path: str) -> dict[str, Any]:
         }
 
     client = get_supabase_client()
+
     if client is None:
         raise RuntimeError(
             "Supabase is not configured. "
@@ -370,15 +411,17 @@ def preview_dataset(file_path: str) -> dict[str, Any]:
             .execute()
         )
 
+        provisions = act.get("provisions", [])
+
         if not existing.data:
             totals["acts_new"] += 1
-            totals["provisions_new"] += len(act.get("provisions", []))
+            totals["provisions_new"] += len(provisions)
 
             results.append({
                 "act_title": act["act_title"],
                 "act_exists": False,
-                "provisions_in_dataset": len(act.get("provisions", [])),
-                "provisions_new": len(act.get("provisions", [])),
+                "provisions_in_dataset": len(provisions),
+                "provisions_new": len(provisions),
                 "provisions_existing": 0,
             })
             continue
@@ -398,7 +441,6 @@ def preview_dataset(file_path: str) -> dict[str, Any]:
             for row in (existing_provisions.data or [])
         }
 
-        provisions = act.get("provisions", [])
         new_count = sum(
             1
             for provision in provisions
