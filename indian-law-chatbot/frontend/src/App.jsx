@@ -137,7 +137,7 @@ function formatText(text) {
           <div className="brand-mark">§</div>
           <div>
             <strong>KANOON AI</strong>
-            <span>INDIAN LAW ASSISTANT</span>
+            <span>INDIAN IT ACT Assistant</span>
           </div>
         </div>
 
