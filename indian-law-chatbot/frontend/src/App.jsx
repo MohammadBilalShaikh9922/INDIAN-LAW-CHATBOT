@@ -1,9 +1,13 @@
+
 import { useEffect, useRef, useState } from 'react';
 
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
   'https://indian-law-chatbot-nvrv.onrender.com'
 ).replace(/\/$/, '');
+
+const CHAT_STORAGE_KEY = 'kanoon_ai_chat_history_v1';
+const MAX_SAVED_MESSAGES = 100;
 
 const suggestions = [
   'Explain Article 21 and the right to life',
@@ -19,16 +23,68 @@ const welcome = {
   disclaimer: 'General information only — not legal advice.'
 };
 
+function loadSavedMessages() {
+  try {
+    const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+
+    if (!saved) {
+      return [welcome];
+    }
+
+    const parsed = JSON.parse(saved);
+
+    if (
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every(
+        message =>
+          message &&
+          ['user', 'assistant'].includes(message.role) &&
+          typeof message.text === 'string'
+      )
+    ) {
+      return parsed.slice(-MAX_SAVED_MESSAGES).map(message => ({
+        role: message.role,
+        text: message.text,
+        sources: Array.isArray(message.sources) ? message.sources : [],
+        ...(typeof message.disclaimer === 'string'
+          ? { disclaimer: message.disclaimer }
+          : {})
+      }));
+    }
+  } catch {
+    console.warn('Could not restore KANOON AI chat history.');
+  }
+
+  return [welcome];
+}
+
 export default function App() {
-  const [messages, setMessages] = useState([welcome]);
+  const [messages, setMessages] = useState(loadSavedMessages);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const endRef = useRef(null);
 
+  // Keep the latest messages visible.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    endRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'end'
+    });
   }, [messages, loading]);
+
+  // Save conversation history automatically.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CHAT_STORAGE_KEY,
+        JSON.stringify(messages.slice(-MAX_SAVED_MESSAGES))
+      );
+    } catch {
+      console.warn('Could not save KANOON AI chat history.');
+    }
+  }, [messages]);
 
   async function sendMessage(value) {
     const message = (value ?? input).trim();
@@ -37,20 +93,28 @@ export default function App() {
 
     setInput('');
     setError('');
+
     setMessages(previous => [
       ...previous,
       { role: 'user', text: message }
     ]);
+
     setLoading(true);
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
           message,
           history: messages
-            .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+            .filter(
+              msg =>
+                msg.role === 'user' ||
+                msg.role === 'assistant'
+            )
             .slice(-10)
             .map(msg => ({
               role: msg.role,
@@ -66,7 +130,9 @@ export default function App() {
       const data = await response.json();
 
       if (typeof data.answer !== 'string') {
-        throw new Error('The API response did not contain a valid answer.');
+        throw new Error(
+          'The API response did not contain a valid answer.'
+        );
       }
 
       setMessages(previous => [
@@ -75,11 +141,14 @@ export default function App() {
           role: 'assistant',
           text: data.answer,
           sources: Array.isArray(data.sources) ? data.sources : [],
-          disclaimer: data.disclaimer || 'General information only — not legal advice.'
+          disclaimer:
+            data.disclaimer ||
+            'General information only — not legal advice.'
         }
       ]);
     } catch (err) {
       setError(`${err.message}. Backend: ${API_BASE}`);
+
       setMessages(previous => [
         ...previous,
         {
@@ -100,35 +169,29 @@ export default function App() {
     setError('');
   }
 
-  
-function formatText(text) {
-  const lines = String(text ?? '')
-    // Convert escaped newlines and remove unwanted escape characters.
-    .replace(/\\r\\n/g, '\n')
-    .replace(/\\n/g, '\n')
-    .replace(/\\\*/g, '*')
-    .replace(/\\\*/g, '*')
-    .split('\n');
+  function formatText(text) {
+    const lines = String(text ?? '')
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\\*/g, '*')
+      .split('\n');
 
-  return lines.map((line, index) => {
-    const cleanedLine = line.trim();
+    return lines.map((line, index) => {
+      const cleanedLine = line.trim();
+      const headingMatch = cleanedLine.match(/^\*\*(.*?)\*\*$/);
 
-    // Display Markdown-style headings as bold text.
-    const headingMatch = cleanedLine.match(/^\*\*(.*?)\*\*$/);
-
-    return (
-      <span key={index}>
-        {headingMatch ? (
-          <strong>{headingMatch[1]}</strong>
-        ) : (
-          cleanedLine.replace(/\*\*/g, '')
-        )}
-        {index < lines.length - 1 && <br />}
-      </span>
-    );
-  });
-}
-
+      return (
+        <span key={index}>
+          {headingMatch ? (
+            <strong>{headingMatch[1]}</strong>
+          ) : (
+            cleanedLine.replace(/\*\*/g, '')
+          )}
+          {index < lines.length - 1 && <br />}
+        </span>
+      );
+    });
+  }
 
   return (
     <div className="app-shell">
@@ -147,17 +210,31 @@ function formatText(text) {
 
         <div className="side-label">EXPLORE</div>
         <div className="nav-item active">Legal chatbot</div>
-        <a className="nav-item" href="https://www.indiacode.nic.in/" target="_blank" rel="noreferrer">
+
+        <a
+          className="nav-item"
+          href="https://www.indiacode.nic.in/"
+          target="_blank"
+          rel="noreferrer"
+        >
           India Code ↗
         </a>
-        <a className="nav-item" href="https://nalsa.gov.in/" target="_blank" rel="noreferrer">
+
+        <a
+          className="nav-item"
+          href="https://nalsa.gov.in/"
+          target="_blank"
+          rel="noreferrer"
+        >
           Free legal aid ↗
         </a>
 
         <div className="sidebar-bottom">
           <div className="privacy-note">
             <b>Use with care</b>
-            <span>Don't enter private case details or sensitive personal data.</span>
+            <span>
+              Don't enter private case details or sensitive personal data.
+            </span>
           </div>
           <div className="version">Educational prototype · v1.0</div>
         </div>
@@ -165,7 +242,9 @@ function formatText(text) {
 
       <main className="main">
         <header className="topbar">
-          <div className="breadcrumb">Workspace / <b>Legal assistant</b></div>
+          <div className="breadcrumb">
+            Workspace / <b>Legal assistant</b>
+          </div>
           <div className="top-status">
             <span className="status-dot" /> Information mode
           </div>
@@ -173,12 +252,21 @@ function formatText(text) {
 
         <section className="content">
           <div className="hero">
-            <div className="eyebrow">AI-POWERED LEGAL INFORMATION</div>
-            <h1>Understand the law.<br /><em>Know your next step.</em></h1>
+            <div className="eyebrow">
+              AI-POWERED LEGAL INFORMATION
+            </div>
+
+            <h1>
+              Understand the law.
+              <br />
+              <em>Know your next step.</em>
+            </h1>
+
             <p>
               Ask questions about Indian laws in plain language and explore
               useful starting points from official legal resources.
             </p>
+
             <div className="hero-tags">
               <span>Source-linked answers</span>
               <span>Indian law focus</span>
@@ -193,46 +281,65 @@ function formatText(text) {
                 <b>Legal information assistant</b>
                 <span>Ask a question to begin</span>
               </div>
-              <span className="prototype-badge">STARTER DATABASE</span>
+              <span className="prototype-badge">
+                STARTER DATABASE
+              </span>
             </div>
 
             <div className="messages" aria-live="polite">
               {messages.map((msg, index) => (
-                <div className={`message-row ${msg.role}`} key={`${index}-${msg.role}`}>
-                  {msg.role === 'assistant' && <div className="avatar">§</div>}
+                <div
+                  className={`message-row ${msg.role}`}
+                  key={`${index}-${msg.role}`}
+                >
+                  {msg.role === 'assistant' && (
+                    <div className="avatar">§</div>
+                  )}
+
                   <div className="message-body">
                     <div className="message-label">
                       {msg.role === 'assistant' ? 'KANOON AI' : 'YOU'}
                     </div>
+
                     <div className={`bubble ${msg.role}`}>
                       {formatText(msg.text ?? '')}
                     </div>
 
-                    {Array.isArray(msg.sources) && msg.sources.length > 0 && (
-                      <div className="sources">
-                        <div className="sources-title">References to verify</div>
-                        {msg.sources.map((source, sourceIndex) => (
-                          <a
-                            key={`${source.url}-${sourceIndex}`}
-                            href={source.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="source-link"
-                          >
-                            <span>
-                              <b>{source.title || 'Legal reference'}</b>
-                              {source.act && (
-                                <small>
-                                  {source.act}
-                                  {source.provision ? ` · ${source.provision}` : ''}
-                                </small>
-                              )}
-                            </span>
-                            <span>↗</span>
-                          </a>
-                        ))}
-                      </div>
-                    )}
+                    {Array.isArray(msg.sources) &&
+                      msg.sources.length > 0 && (
+                        <div className="sources">
+                          <div className="sources-title">
+                            References to verify
+                          </div>
+
+                          {msg.sources.map((source, sourceIndex) => (
+                            <a
+                              key={`${source.url}-${sourceIndex}`}
+                              href={source.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="source-link"
+                            >
+                              <span>
+                                <b>
+                                  {source.title || 'Legal reference'}
+                                </b>
+
+                                {source.act && (
+                                  <small>
+                                    {source.act}
+                                    {source.provision
+                                      ? ` · ${source.provision}`
+                                      : ''}
+                                  </small>
+                                )}
+                              </span>
+
+                              <span>↗</span>
+                            </a>
+                          ))}
+                        </div>
+                      )}
 
                     {msg.disclaimer && msg.role === 'assistant' && (
                       <div className="message-disclaimer">
@@ -261,6 +368,7 @@ function formatText(text) {
             {messages.length === 1 && (
               <div className="suggestions">
                 <div className="suggestion-title">TRY ASKING</div>
+
                 <div className="suggestion-grid">
                   {suggestions.map((suggestion, index) => (
                     <button
@@ -277,7 +385,9 @@ function formatText(text) {
               </div>
             )}
 
-            {error && <div className="error-banner">{error}</div>}
+            {error && (
+              <div className="error-banner">{error}</div>
+            )}
 
             <form
               className="composer"
@@ -293,32 +403,59 @@ function formatText(text) {
                 maxLength={2000}
                 aria-label="Your legal question"
               />
-              <button type="submit" disabled={!input.trim() || loading}>
+
+              <button
+                type="submit"
+                disabled={!input.trim() || loading}
+              >
                 Send
               </button>
             </form>
 
             <div className="composer-foot">
-              <span>Answers are based on a limited starter dataset.</span>
+              <span>
+                Answers are based on a limited starter dataset.
+              </span>
               <span>{input.length}/2000</span>
             </div>
           </div>
 
           <div className="bottom-notice">
             <p>
-              <b>Important legal notice</b> KANOON AI provides general educational
-              information, not legal advice. Laws change and the right answer
-              depends on your facts. Verify every source and consult a qualified
-              advocate before taking legal action.
+              <b>Important legal notice</b> KANOON AI provides general
+              educational information, not legal advice. Laws change and
+              the right answer depends on your facts. Verify every source
+              and consult a qualified advocate before taking legal action.
             </p>
           </div>
 
           <footer>
             <span>KANOON AI · AI Powered Indian Law Chatbot</span>
+
             <div>
-              <a href="https://www.indiacode.nic.in/" target="_blank" rel="noreferrer">India Code</a>
-              <a href="https://legislative.gov.in/" target="_blank" rel="noreferrer">Legislative Department</a>
-              <a href="https://nalsa.gov.in/" target="_blank" rel="noreferrer">NALSA</a>
+              <a
+                href="https://www.indiacode.nic.in/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                India Code
+              </a>
+
+              <a
+                href="https://legislative.gov.in/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Legislative Department
+              </a>
+
+              <a
+                href="https://nalsa.gov.in/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                NALSA
+              </a>
             </div>
           </footer>
         </section>
