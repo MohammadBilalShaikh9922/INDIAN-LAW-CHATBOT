@@ -10,10 +10,10 @@ const CHAT_STORAGE_KEY = 'kanoon_ai_chat_history_v1';
 const MAX_SAVED_MESSAGES = 100;
 
 const suggestions = [
-  'Explain Article 21 and the right to life',
-  'What are general consumer rights in India?',
-  'How can I find free legal aid?',
-  'What should I know about tenant rights?'
+  'What is Section 43 of the IT Act, 2000?',
+  'What is the punishment for hacking under the IT Act?',
+  'What does Section 66 of the IT Act say?',
+  'What are the penalties for identity theft under Section 66C?'
 ];
 
 const welcome = {
