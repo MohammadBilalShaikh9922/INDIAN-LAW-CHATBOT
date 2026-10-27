@@ -473,6 +473,135 @@ def retrieve(
     return scored[:limit]
 
 
+class ActVerificationRequest(BaseModel):
+    verified_by: str = Field(min_length=2, max_length=120)
+    verification_notes: str = Field(min_length=50, max_length=4000)
+    source_checked: bool = False
+    amendment_status_checked: bool = False
+    provision_text_reviewed: bool = False
+
+
+@app.post("/api/legislation/acts/{act_id}/verify")
+def verify_legislation_act(
+    act_id: int,
+    request: ActVerificationRequest,
+    x_review_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """
+    Record human verification of an Act's source and text.
+    This does not publish the Act or its provisions.
+    """
+    require_review_token(x_review_token)
+
+    if not (
+        request.source_checked
+        and request.amendment_status_checked
+        and request.provision_text_reviewed
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Verify the official source, amendment status, and "
+                "provision text before marking the Act verified."
+            ),
+        )
+
+    client = get_supabase_client()
+
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase is not configured.",
+        )
+
+    try:
+        result = (
+            client.table("law_acts")
+            .select(
+                "id, act_title, source_url, status, import_status, "
+                "import_batch_id"
+            )
+            .eq("id", act_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        print(f"Act verification lookup failed: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not retrieve the Act record.",
+        ) from None
+
+    if not result.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Act not found.",
+        )
+
+    act = result.data[0]
+
+    if act.get("import_status") != "staged":
+        raise HTTPException(
+            status_code=409,
+            detail="Only a staged Act can enter this verification workflow.",
+        )
+
+    if not act.get("import_batch_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="The Act is not associated with an import batch.",
+        )
+
+    notes = request.verification_notes.strip()
+
+    if len(notes) < 50:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide at least 50 characters of verification notes.",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        update_result = (
+            client.table("law_acts")
+            .update({
+                "status": "verified",
+                "last_verified_at": now,
+                "updated_at": now,
+            })
+            .eq("id", act_id)
+            .eq("import_status", "staged")
+            .execute()
+        )
+    except Exception as exc:
+        print(f"Act verification update failed: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save Act verification.",
+        ) from None
+
+    if not update_result.data:
+        raise HTTPException(
+            status_code=409,
+            detail="The Act changed during verification. Reload and retry.",
+        )
+
+    return {
+        "act_id": act_id,
+        "act_title": act.get("act_title"),
+        "status": "verified",
+        "import_status": "staged",
+        "verified_by": request.verified_by.strip(),
+        "verification_notes": notes,
+        "last_verified_at": now,
+        "published": False,
+        "message": (
+            "Act verification recorded. The import batch still requires "
+            "review and separate publication."
+        ),
+    }
+
 
 # ---------------------------------------------------------------------
 # Shared review and publication safeguards
