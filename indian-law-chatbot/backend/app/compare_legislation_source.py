@@ -140,7 +140,13 @@ def main():
             review_items += 1
             continue
 
-        act_name = act.get("act_name") or act.get("title") or "Unnamed Act"
+        act_name = (
+            act.get("act_title")
+            or act.get("short_title")
+            or act.get("act_name")
+            or act.get("title")
+            or "Unnamed Act"
+        )
         provisions = act.get("provisions", [])
 
         lines.extend(
