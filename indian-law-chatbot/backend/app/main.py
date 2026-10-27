@@ -567,6 +567,8 @@ def verify_legislation_act(
             client.table("law_acts")
             .update({
                 "status": "verified",
+                "verified_by": request.verified_by.strip(),
+                "verification_notes": notes,
                 "last_verified_at": now,
                 "updated_at": now,
             })
