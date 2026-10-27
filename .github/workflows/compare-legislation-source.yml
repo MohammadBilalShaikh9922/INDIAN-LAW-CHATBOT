@@ -24,11 +24,11 @@ jobs:
         run: python -m pip install pypdf
 
       - name: Generate preliminary comparison report
-        run: python backend/app/compare_legislation_source.py
+        run: python indian-law-chatbot/backend/app/compare_legislation_source.py
 
       - name: Upload comparison report
         uses: actions/upload-artifact@v4
         with:
           name: nyayaai-legislation-comparison-report
-          path: backend/app/legislation_source_comparison_report.md
+          path: indian-law-chatbot/backend/app/legislation_source_comparison_report.md
           if-no-files-found: error
